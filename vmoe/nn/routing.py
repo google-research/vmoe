@@ -22,6 +22,7 @@ import jax.numpy as jnp
 import vmoe.moe
 
 Array = jnp.ndarray
+BaseDispatcher = vmoe.moe.BaseDispatcher
 DType = type(jnp.float32)
 KwArgs = Mapping[str, Any]
 Metrics = Mapping[str, Array]
@@ -51,36 +52,44 @@ class NoisyTopExpertsPerItemRouter(nn.Module):
   dtype: Optional[DType] = None
 
   @nn.compact
-  def __call__(self, inputs: Array) -> Tuple[vmoe.moe.BaseDispatcher, Metrics]:
+  def __call__(self, inputs: Array) -> Tuple[BaseDispatcher, Metrics]:
+    gates_softmax, metrics = self._compute_gates_softmax_and_metrics(
+        inputs, self.num_experts)
+    dispatcher = self._create_dispatcher(gates_softmax)
+    return dispatcher, metrics
+
+  @nn.nowrap
+  def _compute_gates_softmax_and_metrics(
+      self, inputs: Array, num_experts: int) -> Tuple[Array, Metrics]:
     if inputs.ndim != 3:
       raise ValueError(f"inputs.ndim must be 3, but it is {inputs.ndim}")
-    if not self.num_experts >= self.num_selected_experts >= 1:
+    if not num_experts >= self.num_selected_experts >= 1:
       raise ValueError(f"num_experts >= num_selected_experts >= 1, but got "
-                       f"num_experts = {self.num_experts} and "
+                       f"num_experts = {num_experts} and "
                        f"num_selected_experts = {self.num_selected_experts}.")
     dtype = self.dtype or inputs.dtype
     # Compute the gating logits for each pair of (item, expert).
-    gates_logits = nn.Dense(features=self.num_experts, use_bias=False,
+    gates_logits = nn.Dense(features=num_experts, use_bias=False,
                             dtype=dtype, name="dense")(inputs)
     # Compute the auxiliary losses defined in Appendix A.2, from
     # https://arxiv.org/abs/2106.05974. Notice that the "Load Loss" can only be
     # computed if the router is stochastic (i.e. deterministic = False).
     # Notice that the auxiliary losses are computed on each group independently
     # (i.e. through the vmaps surrounding the calls).
+    gates_softmax = jax.nn.softmax(gates_logits)
+    importance_loss = jax.vmap(self._importance_auxiliary_loss)(gates_softmax)
     if self.deterministic or self.noise_std == 0.0:
-      gates_softmax = jax.nn.softmax(gates_logits)
-      importance_loss = jax.vmap(self._importance_auxiliary_loss)(gates_softmax)
       metrics = {
           "auxiliary_loss": self.importance_loss_weight * importance_loss,
           "importance_loss": importance_loss,
       }
+      return gates_softmax, metrics
     else:
-      noise_std = (1.0 / self.num_experts) * self.noise_std
+      noise_std = (1.0 / num_experts) * self.noise_std
       logits_noise = noise_std * jax.random.normal(
           key=self.make_rng("gating"), shape=gates_logits.shape)
       gates_logits_noisy = gates_logits + logits_noise
-      gates_softmax = jax.nn.softmax(gates_logits_noisy)
-      importance_loss = jax.vmap(self._importance_auxiliary_loss)(gates_softmax)
+      gates_softmax_noisy = jax.nn.softmax(gates_logits_noisy)
       load_loss = jax.vmap(
           functools.partial(
               self._load_auxiliary_loss,
@@ -92,6 +101,10 @@ class NoisyTopExpertsPerItemRouter(nn.Module):
           "importance_loss": importance_loss,
           "load_loss": load_loss,
       }
+      return gates_softmax_noisy, metrics
+
+  @nn.nowrap
+  def _create_dispatcher(self, gates_softmax):
     # Create a dispatcher implementing the TopExpertsPerItem routing algorithm,
     # that uses at most `num_selected_experts` per item. Notice that each
     # group is dispatched independently.
@@ -105,8 +118,7 @@ class NoisyTopExpertsPerItemRouter(nn.Module):
     dispatcher = get_top_experts_per_item_dispatcher_vmapped(gates_softmax)
     if use_bfloat16:
       dispatcher = vmoe.moe.Bfloat16Dispatcher(dispatcher)
-
-    return dispatcher, metrics
+    return dispatcher
 
   @classmethod
   def _importance_auxiliary_loss(cls, gates: Array) -> Array:
@@ -123,8 +135,14 @@ class NoisyTopExpertsPerItemRouter(nn.Module):
                            num_selected_experts: int) -> Array:
     # For each example, compute the weight required for an expert to be selected
     # among the top-k.
-    threshold_per_item = jax.lax.top_k(
-        logits_noisy, num_selected_experts)[0][..., -1]
+    # NOTE: DO NOT TRY TO SIMPLIFY THIS. This convoluted way of obtaining the
+    # threshold_per_item avoids adding all-gather ops during backpropagation.
+    num_experts = logits_noisy.shape[-1]
+    threshold_per_item_index = jax.lax.top_k(
+        logits_noisy, num_selected_experts)[-1][..., -1]
+    threshold_per_item = jnp.sum(
+        jax.nn.one_hot(threshold_per_item_index, num_experts) * logits_noisy,
+        axis=-1)
     # For each example and expert, find how far they were from the threshold and
     # normalize this value by the noise_std to use the standard Gaussian CDF.
     noise_required_to_win = threshold_per_item[..., None] - logits

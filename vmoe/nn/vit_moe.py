@@ -13,7 +13,7 @@
 # limitations under the License.
 
 """Module with gating layers."""
-from typing import Any, Callable, Mapping, Optional, Tuple, Type
+from typing import Any, Callable, Iterable, Mapping, Optional, Tuple, Type
 
 import flax.linen as nn
 import jax.numpy as jnp
@@ -29,9 +29,18 @@ DType = type(jnp.float32)
 IdentityLayer = vit_models.IdentityLayer
 KwArgs = Mapping[str, Any]
 Metrics = Mapping[str, Array]
-Shape = Tuple[int, ...]
+Shape = Iterable[int]
 
 InitializerFn = Callable[[PRNGKey, Shape, DType], Array]
+
+
+def constant_initializer(constant: float) -> InitializerFn:
+
+  def f(key: PRNGKey, shape: Shape, dtype: DType = jnp.float_) -> Array:
+    ones = nn.initializers.ones(key, shape, dtype)
+    return jnp.asarray(constant, dtype=dtype) * ones
+
+  return f
 
 
 # Slight modification of the VisionTransformer's MlpBlock API.
@@ -74,7 +83,7 @@ class MlpMoeWithNoisyTopExpertsPerItemRouter(nn.Module):
 
   @nn.compact
   def __call__(self, inputs):
-    assert inputs.ndim == 3
+    assert inputs.ndim == 3, f'Expected ndim = 3, but got shape {inputs.shape}'
     # Reshape inputs from (num_seqs, seq_length, hidden_size) to
     # (num_groups, groups_size, hidden_size).
     inputs_shape = inputs.shape
@@ -176,8 +185,7 @@ class EncoderMoe(nn.Module):
 
   @nn.compact
   def __call__(self, inputs):
-    assert inputs.ndim == 3  # (batch, len, emb)
-
+    assert inputs.ndim == 3, f'Expected ndim = 3, but got shape {inputs.shape}'
     x = AddPositionEmbs(
         posemb_init=nn.initializers.normal(stddev=0.02),  # from BERT.
         name='posembed_input')(inputs)
@@ -227,6 +235,7 @@ class VisionTransformerMoe(nn.Module):
   classifier: str = 'token'
   representation_size: Optional[int] = None
   deterministic: bool = False
+  head_bias_init: float = 0.0
 
   @nn.compact
   def __call__(self, inputs):
@@ -261,7 +270,8 @@ class VisionTransformerMoe(nn.Module):
       logits = nn.Dense(
           features=self.num_classes,
           name='head',
-          kernel_init=nn.initializers.zeros)(x)
+          kernel_init=nn.initializers.zeros,
+          bias_init=constant_initializer(self.head_bias_init))(x)
       return logits, metrics
     else:
       return x, metrics

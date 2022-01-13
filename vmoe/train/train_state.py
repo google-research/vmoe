@@ -12,8 +12,19 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Module with all the classification models."""
-# pylint: disable=unused-import
-from vmoe.nn.external import MlpMixer
-from vmoe.nn.external import VisionTransformer
-from vmoe.nn.vit_moe import VisionTransformerMoe
+"""TrainState and other related classes."""
+from typing import Dict, Union
+
+import flax.training.train_state
+import jax
+
+PRNGKey = Union[jax.numpy.ndarray, jax.random.KeyArray]
+
+
+class TrainState(flax.training.train_state.TrainState):
+  rngs: Dict[str, PRNGKey]
+
+
+# TrainStateAxisResources is a PyTree with the same structure as TrainState but
+# whose leaves are PartitionSpec objects.
+TrainStateAxisResources = TrainState

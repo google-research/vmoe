@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Tests for models."""
+"""Tests for routing."""
 from unittest import mock
 
 from absl.testing import absltest
@@ -99,6 +99,10 @@ class NoisyTopExpertsPerItemRouterTest(absltest.TestCase):
     different_fn = lambda x, y: jnp.abs(x - y).sum() > 0.01
     error_msg_fn = lambda x, y: f'{x} is too close to {y}'
     chex.assert_trees_all_equal_comparator(different_fn, error_msg_fn, y1, y2)
+    # Importance loss is applied before adding noise, so it should be identical.
+    chex.assert_trees_all_close(m1['importance_loss'], m2['importance_loss'])
+    del m1['importance_loss']
+    del m2['importance_loss']
     chex.assert_trees_all_equal_comparator(different_fn, error_msg_fn, m1, m2)
 
 

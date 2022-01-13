@@ -66,6 +66,15 @@ class DispatcherTest(parameterized.TestCase):
     np.testing.assert_array_almost_equal(output, expected)
 
   @parameterized.named_parameters(
+      ('none', None, None),
+      ('str', 'a', moe.PartitionSpec('a')),
+      ('tuple_1', ('a', 'b'), moe.PartitionSpec('a', 'b')),
+      ('tuple_2', (('a', 'b'), 'c'), moe.PartitionSpec(('a', 'b'), 'c')),
+  )
+  def test_convert_partition_spec(self, partition_spec, expected):
+    self.assertEqual(moe._convert_partition_spec(partition_spec), expected)
+
+  @parameterized.named_parameters(
       ('dispatch', '_run_dispatch'),
       ('combine', '_run_combine'),
   )
@@ -209,7 +218,7 @@ class SparseMoeSpmdLayerTest(parameterized.TestCase):
     x = 10 * jnp.arange(1, 1 + batch_size, dtype=jnp.float32)
     num_groups = batch_size // group_size
     x = x.reshape(num_groups, group_size, 1)
-    x = moe._with_sharding_constraint(x, partition_spec)
+    x = moe.with_sharding_constraint(x, partition_spec)
     return x
 
   @classmethod
@@ -224,7 +233,7 @@ class SparseMoeSpmdLayerTest(parameterized.TestCase):
         dtype=jnp.int32)
     w = w.reshape(num_groups, group_size, 2, num_experts)
     w = w.transpose(0, 2, 1, 3).reshape(-1, group_size * 2, num_experts)
-    w = moe._with_sharding_constraint(w, partition_spec)
+    w = moe.with_sharding_constraint(w, partition_spec)
     w = jax.nn.one_hot(
         x=jnp.cumsum(w, axis=1) * w - 1,
         num_classes=capacity,
@@ -247,19 +256,19 @@ class SparseMoeSpmdLayerTest(parameterized.TestCase):
     # Compute expert indices for each example (K=2).
     expert_idx = jnp.arange(2 * batch_size, dtype=jnp.int32) % num_experts
     expert_idx = expert_idx.reshape(num_groups, group_size, 2)
-    expert_idx = moe._with_sharding_constraint(expert_idx, partition_spec)
+    expert_idx = moe.with_sharding_constraint(expert_idx, partition_spec)
     # Compute buffer indices for each example (K=2).
     expert_idx = expert_idx.transpose(0, 2, 1).reshape(-1, 2 * group_size)
     expert_oh = jax.nn.one_hot(expert_idx, num_experts, dtype=jnp.int32)
     buffer_idx = jnp.max(jnp.cumsum(expert_oh, axis=1) * expert_oh - 1, axis=2)
     expert_idx = expert_idx.reshape(-1, 2, group_size).transpose(0, 2, 1)
     buffer_idx = buffer_idx.reshape(-1, 2, group_size).transpose(0, 2, 1)
-    buffer_idx = moe._with_sharding_constraint(buffer_idx, partition_spec)
+    buffer_idx = moe.with_sharding_constraint(buffer_idx, partition_spec)
     # Compute combine weights for each example (K=2).
     combine_weights = jnp.ones((num_groups, group_size, 2), dtype=jnp.float32)
     combine_weights = combine_weights * jnp.asarray([[[.7, .3]]])
-    combine_weights = moe._with_sharding_constraint(combine_weights,
-                                                    partition_spec)
+    combine_weights = moe.with_sharding_constraint(combine_weights,
+                                                   partition_spec)
     dispatcher = moe.ExpertIndicesDispatcher(
         indices=jnp.stack([expert_idx, buffer_idx], axis=-1),
         combine_weights=combine_weights,

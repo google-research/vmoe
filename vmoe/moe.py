@@ -33,13 +33,14 @@ import flax.core.lift
 import flax.linen.transforms
 import flax.struct
 import jax
-from jax.experimental import maps
 from jax.experimental import pjit
 import jax.numpy as jnp
+import vmoe.partitioning
 
 
 Array = jnp.ndarray
 PartitionSpec = pjit.PartitionSpec
+with_sharding_constraint = vmoe.partitioning.with_sharding_constraint
 
 
 class BaseDispatcher(abc.ABC):
@@ -154,9 +155,7 @@ class ExpertIndicesDispatcher(BaseDispatcher):
     data = jnp.repeat(data, num_selected_experts, axis=1)
     indices = self.indices.reshape(num_groups, -1, 2)
     shape = (self.num_experts, self.capacity, *item_shape)
-    data = jax.vmap(
-        lambda x, i: _scatter_nd(i, x, shape))(
-            data, indices)
+    data = jax.vmap(lambda x, i: _scatter_nd(i, x, shape))(data, indices)
     return _dispatch(data, self.partition_spec)
 
   def combine(self, data: Array) -> Array:
@@ -293,39 +292,40 @@ def _cast_to_bfloat16(x: Array) -> Array:
   return x.astype(jnp.bfloat16) if jnp.issubdtype(x.dtype, jnp.floating) else x
 
 
+def _convert_partition_spec(spec):
+  if spec is not None and not isinstance(spec, PartitionSpec):
+    spec = (spec,) if isinstance(spec, str) else tuple(spec)
+    spec = PartitionSpec(*spec)
+  return spec
+
+
 def _dispatch(data: Array, partition_spec: Optional[PartitionSpec]) -> Array:
   """Dispatches data to experts using all_to_all."""
+  partition_spec = _convert_partition_spec(partition_spec)
   num_groups, num_experts, capacity, *item_shape = data.shape
-  data = _with_sharding_constraint(data, partition_spec)
+  data = with_sharding_constraint(data, partition_spec)
   data = data.reshape(num_experts, num_groups // num_experts, num_experts,
                       capacity, *item_shape)
   data = jnp.swapaxes(data, 0, 2)
   data = data.reshape(-1, *item_shape)
-  data = _with_sharding_constraint(data, partition_spec)
+  data = with_sharding_constraint(data, partition_spec)
   return data.reshape(num_experts, num_groups * capacity, *item_shape)
 
 
 def _receive(data: Array, num_groups: int,
              partition_spec: Optional[PartitionSpec]) -> Array:
   """Receives data from experts using all_to_all."""
+  partition_spec = _convert_partition_spec(partition_spec)
   num_experts, num_groups_time_capacity, *item_shape = data.shape
   capacity = num_groups_time_capacity // num_groups
   data = data.reshape(num_experts * num_groups, capacity, *item_shape)
-  data = _with_sharding_constraint(data, partition_spec)
+  data = with_sharding_constraint(data, partition_spec)
   data = data.reshape(num_experts, num_groups // num_experts, num_experts,
                       capacity, *item_shape)
   data = jnp.swapaxes(data, 0, 2)
   data = data.reshape(num_groups, num_experts, capacity, *item_shape)
-  data = _with_sharding_constraint(data, partition_spec)
+  data = with_sharding_constraint(data, partition_spec)
   return data
-
-
-def _with_sharding_constraint(x, partition_spec):
-  """Specifies a partition_spec for a given array to help pjit's sharding."""
-  if maps.thread_resources.env.physical_mesh.empty or partition_spec is None:
-    return x
-  else:
-    return pjit.with_sharding_constraint(x, partition_spec)
 
 
 def _scatter_nd(indices, updates, shape):

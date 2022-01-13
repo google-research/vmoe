@@ -16,6 +16,8 @@
 import collections.abc
 from typing import Any, Callable, Iterator, Tuple, Type
 
+import jax
+
 
 def partialclass(cls: Type[Any], *base_args, **base_kwargs):
   """Builds a subclass with partial application of the given args and keywords."""
@@ -71,3 +73,20 @@ def safe_map(f: Callable[..., Any], *iterables) -> Iterator[Any]:
 
 def safe_zip(*iterables) -> Iterator[Tuple[Any, ...]]:
   return SafeZipIterator(*iterables)
+
+
+def tree_rngs_split(rngs, num_splits=2):
+  """Splits a PyTree of PRNGKeys into num_splits PyTrees."""
+  rngs = jax.tree_map(lambda rng: jax.random.split(rng, num_splits), rngs)
+  slice_rngs = lambda rngs, i: jax.tree_map(lambda rng: rng[i], rngs)
+  return tuple(slice_rngs(rngs, i) for i in range(num_splits))
+
+
+def tree_shape_dtype_struct(tree):
+  """Converts a PyTree with array-like objects to jax.ShapeDtypeStruct."""
+  def fn(x):
+    shape, dtype = x.shape, x.dtype
+    # Useful to convert Tensorflow Tensors.
+    dtype = dtype.as_numpy_dtype if hasattr(dtype, 'as_numpy_dtype') else dtype
+    return jax.ShapeDtypeStruct(shape=shape, dtype=dtype)
+  return jax.tree_map(fn, tree)
