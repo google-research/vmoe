@@ -507,6 +507,7 @@ def train_and_evaluate(config: ml_collections.ConfigDict, workdir: str):
       evaluation_hook(step, params=train_state.params)
   # Write a checkpoint containing only the params, with no TrainState, to use
   # for fine-tuning or releasing it.
+  logging.info('Saving checkpoint ready for releasing and fine-tuning.')
   checkpoints_partitioned.save_checkpoint(
       prefix=os.path.join(workdir, 'release_ckpt'),
       tree=train_state.params,
@@ -515,6 +516,7 @@ def train_and_evaluate(config: ml_collections.ConfigDict, workdir: str):
       makedirs=False,
       thread_pool=config.get('save_checkpoint', {}).get('num_threads')).wait()
   multihost_utils.sync_devices('checkpoints:release')
+  logging.info('Training completed.')
 
 
 def tree_axis_resources_from_regexes(

@@ -18,7 +18,7 @@ Most of these were originally implemented by: Lucas Beyer, Alex Kolesnikov,
 Xiaohua Zhai and other collaborators from Google Brain Zurich.
 """
 import ast
-from typing import Any, Callable, Dict, Iterator
+from typing import Any, Callable, Dict, Iterator, Optional, Union
 
 from absl import logging
 import cachetools
@@ -35,9 +35,9 @@ Data = Dict[str, Any]
 
 @cachetools.cached(
     cache={},
-    key=lambda name, data_dir, _: cachetools.keys.hashkey(name, data_dir))
-def _get_dataset_builder(name, data_dir, manual_dir):
-  data_builder = tfds.builder(name=name, data_dir=data_dir)
+    key=lambda name, data_dir, *_: cachetools.keys.hashkey(name, data_dir))
+def _get_dataset_builder(name, data_dir, manual_dir, try_gcs):
+  data_builder = tfds.builder(name=name, data_dir=data_dir, try_gcs=try_gcs)
   data_builder.download_and_prepare(
       download_config=tfds.download.DownloadConfig(manual_dir=manual_dir))
   return data_builder
@@ -51,56 +51,80 @@ def get_datasets(
     if not isinstance(variant_config, ml_collections.ConfigDict):
       raise TypeError(
           f'The config for the {variant!r} variant is not a ConfigDict.')
-    datasets[variant] = get_data_from_tfds(config=variant_config,
-                                           variant=variant)
+    variant_config = variant_config.to_dict()
+    _ = variant_config.pop('prefetch_device', None)
+    datasets[variant] = get_data_from_tfds(variant=variant, **variant_config)
   return datasets
 
 
-def get_data_from_tfds(*, config: ml_collections.ConfigDict,
-                       variant: str) -> tf.data.Dataset:
+def get_data_from_tfds(*,
+                       variant: str,
+                       name: str,
+                       split: str,
+                       batch_size: int,
+                       process: str,
+                       cache: Optional[str] = None,
+                       data_dir: Optional[str] = None,
+                       manual_dir: Optional[str] = None,
+                       prefetch: Optional[Union[int, str]] = None,
+                       shuffle_buffer: int = DEFAULT_SHUFFLE_BUFFER,
+                       shuffle_seed: Optional[int] = None,
+                       try_gcs: bool = False) -> tf.data.Dataset:
   """Returns a Tensorflow dataset from TFDS.
 
   Args:
-    config: Dataset ConfigDict.
     variant: Variant (e.g. 'train', 'validation', ...).
+    name: Name of the dataset in TFDS.
+    split: String with the split to use (e.g. 'train', 'validation[:1000}, etc).
+    batch_size: (Global) batch size to use. We assume that this batch size is
+      evenly split among all devices.
+    process: String representing the processing operations to perform (e.g.
+      'decode|resize(128)|flip_lr'. Check the available ops in `pp_ops.py`).
+    cache: If 'loaded' caches the dataset after loading it. If 'batched',
+      caches it after batching. If `None`, no caching is done.
+    data_dir: Optional directory where the data is stored. If None, it uses the
+      default TFDS data dir.
+    manual_dir: Optional directory where the raw data is stored. This is
+      necessary to prepare some datasets (e.g. 'imagenet2012'), since TFDS does
+      not suppport downloading them directly.
+    prefetch: If given, prefetches this number of batches.
+    shuffle_buffer: Size of the shuffle buffer. Only used for training.
+    shuffle_seed: Optional seed for shuffling files and examples.
+    try_gcs: If True, tries to download data from TFDS' Google Cloud bucket.
 
   Returns:
     A tf.data.Dataset.
   """
-  data_builder = _get_dataset_builder(config.name, config.get('tfds_data_dir'),
-                                      config.get('tfds_manual_dir'))
+  data_builder = _get_dataset_builder(name, data_dir, manual_dir, try_gcs)
   split_name, start, end, smaller_range = get_data_range(
-      data_builder, config.split, jax.process_index(), jax.process_count())
+      data_builder, split, jax.process_index(), jax.process_count())
   logging.info(
       'Process %d / %d will handle examples from %d to %d, from split %r of dataset %r.',
-      jax.process_index(), jax.process_count(), start, end, split_name,
-      config.name)
+      jax.process_index(), jax.process_count(), start, end, split_name, name)
   data_range = tfds.core.ReadInstruction(split_name, start, end)
-  read_config = tfds.ReadConfig(shuffle_seed=config.get('shuffle_seed'))
+  read_config = tfds.ReadConfig(shuffle_seed=shuffle_seed)
   data = data_builder.as_dataset(
       split=data_range,
       decoders={'image': tfds.decode.SkipDecoding()},
       shuffle_files=variant == 'train',
       read_config=read_config)
   # Optionally, cache loaded data.
-  if config.get('cache') == 'loaded':
+  if cache == 'loaded':
     data = data.cache()
   # Compute the batch size per process.
-  if (config.batch_size % jax.process_count() or
-      config.batch_size % jax.device_count()):
+  if (batch_size % jax.process_count() or batch_size % jax.device_count()):
     raise ValueError(f'batch_size must divide the process and device count, '
-                     f'but got {config.batch_size}, {jax.process_count()}, '
+                     f'but got {batch_size}, {jax.process_count()}, '
                      f'and {jax.device_count()} respectively.')
-  batch_size_per_process = config.batch_size // jax.process_count()
+  batch_size_per_process = batch_size // jax.process_count()
   if variant == 'train':
     # Repeat training data forever.
     data = data.repeat()
     # Shuffle training data.
-    shuffle_buffer = config.get('shuffle_buffer', DEFAULT_SHUFFLE_BUFFER)
-    data = data.shuffle(shuffle_buffer, seed=config.get('shuffle_seed'))
+    data = data.shuffle(shuffle_buffer, seed=shuffle_seed)
   # Process data.
   data = data.map(
-      map_func=get_data_process_fn(config.process),
+      map_func=get_data_process_fn(process),
       num_parallel_calls=tf.data.experimental.AUTOTUNE,
       deterministic=False)
   if variant != 'train':
@@ -120,10 +144,9 @@ def get_data_from_tfds(*, config: ml_collections.ConfigDict,
   # Batch data.
   data = data.batch(batch_size_per_process, drop_remainder=True)
   # Optionally, cache data after batching.
-  if config.get('cache') == 'batched':
+  if cache == 'batched':
     data = data.cache()
   # Optionally, prefetch data.
-  prefetch = config.get('prefetch')
   if prefetch == 'autotune':
     prefetch = tf.data.experimental.AUTOTUNE
   data = data.prefetch(prefetch) if prefetch else data

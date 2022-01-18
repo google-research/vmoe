@@ -43,6 +43,7 @@ def main(argv: Sequence[str]) -> None:
   tf.config.experimental.set_visible_devices([], 'GPU')
   # Log JAX compilation steps.
   jax.config.update('jax_log_compiles', True)
+  jax.config.update('jax_default_prng_impl', 'unsafe_rbg')
   # Log useful information to identify the process running in the logs.
   logging.info('JAX process: %d / %d', jax.process_index(), jax.process_count())
   logging.info('JAX local devices: %r', jax.local_devices())

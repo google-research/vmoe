@@ -89,7 +89,7 @@ class InputPipelineTest(absltest.TestCase):
       config.split = 'bar'
       config.batch_size = 5
       config.process = 'copy("x", "y")'
-      data = input_pipeline.get_data_from_tfds(config=config, variant='train')
+      data = input_pipeline.get_data_from_tfds(variant='train', **config)
       # Training data can be iterated forever.
       data = [x for _, x in zip(range(10), iter(data))]
       self.assertLen(data, 10)
@@ -113,7 +113,7 @@ class InputPipelineTest(absltest.TestCase):
       config.split = 'bar'
       config.batch_size = 5
       config.process = 'copy("x", "y")'
-      data = input_pipeline.get_data_from_tfds(config=config, variant='eval')
+      data = input_pipeline.get_data_from_tfds(variant='eval', **config)
       # Eval data is only iterated once, which in this case means 1 batch.
       data = [x for _, x in zip(range(10), iter(data))]
       self.assertLen(data, 1)

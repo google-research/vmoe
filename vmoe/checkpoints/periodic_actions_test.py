@@ -35,9 +35,7 @@ class PeriodicSaveCheckpointRemoveOldCheckpointsTest(absltest.TestCase):
       self.workdir.create_file(f'ckpt_host_{step}-00000-of-00002')
       self.workdir.create_file(f'ckpt_host_{step}-00001-of-00002')
 
-  @mock.patch.object(
-      periodic_actions.multihost_utils, 'sync_devices', return_value=True)
-  def test_remove_old_checkpoints_with_keep_multiple_of(self, _):
+  def test_remove_old_checkpoints_with_keep_multiple_of(self):
     periodic_actions.PeriodicSaveCheckpoint._remove_old_checkpoints(
         prefix=os.path.join(self.workdir.full_path, 'ckpt_'),
         keep_last=2,
@@ -51,9 +49,7 @@ class PeriodicSaveCheckpointRemoveOldCheckpointsTest(absltest.TestCase):
                 [f'ckpt_host_{step}-00001-of-00002' for step in [0, 5, 8, 9]])
     self.assertCountEqual(expected, os.listdir(self.workdir.full_path))
 
-  @mock.patch.object(
-      periodic_actions.multihost_utils, 'sync_devices', return_value=True)
-  def test_remove_old_checkpoints_with_no_keep_multiples(self, _):
+  def test_remove_old_checkpoints_with_no_keep_multiples(self):
     periodic_actions.PeriodicSaveCheckpoint._remove_old_checkpoints(
         prefix=os.path.join(self.workdir.full_path, 'ckpt_'),
         keep_last=2,
@@ -71,10 +67,8 @@ class PeriodicSaveCheckpointRemoveOldCheckpointsTest(absltest.TestCase):
 class PeriodicSaveCheckpointTest(absltest.TestCase):
 
   @mock.patch.object(
-      periodic_actions.multihost_utils, 'sync_devices', return_value=True)
-  @mock.patch.object(
       periodic_actions.checkpoints_partitioned, 'save_checkpoint')
-  def test(self, mock_save_checkpoint, _):
+  def test(self, mock_save_checkpoint):
     # When calling save_checkpoint, we do nothing but we'll wait a few seconds.
     def _save_checkpoint_side_effect(*args, thread_pool, **kwargs):
       del args
@@ -103,9 +97,7 @@ class PeriodicSaveCheckpointTest(absltest.TestCase):
                                axis_resources={}, thread_pool=mock.ANY))
     saver.__del__()
 
-  @mock.patch.object(
-      periodic_actions.multihost_utils, 'sync_devices', return_value=True)
-  def test_report_progress(self, _):
+  def test_report_progress(self):
     mock_report_progress = mock.MagicMock(
         periodic_actions.periodic_actions.ReportProgress)
     # Run a few steps, calling saver on each step.

@@ -17,18 +17,14 @@ import functools
 import zlib
 
 import jax
-import jax.experimental.maps
-import jax.experimental.pjit
 import numpy as np
 
+Device = jax.xla.Device
 
-@functools.partial(
-    jax.experimental.pjit.pjit,
-    in_axis_resources=jax.experimental.pjit.PartitionSpec('d'),
-    out_axis_resources=None,
-)
+
+@functools.partial(jax.pmap, axis_name='devices')
 def _sync_devices_sum(x):
-  return jax.numpy.sum(x)
+  return jax.lax.psum(x, 'devices')
 
 
 def sync_devices(name: str, main_process: int = 0):
@@ -42,10 +38,7 @@ def sync_devices(name: str, main_process: int = 0):
     x[0] = h
   # The values in all devices are summed. Thus, the result in all processes
   # should be 'h'.
-  with jax.experimental.maps.mesh(
-      devices=np.asarray(jax.devices()),
-      axis_names=('d',)):
-    x = _sync_devices_sum(x)
-  if x != h:
+  x = np.asarray(_sync_devices_sum(x))
+  if not (x == h).all():
     raise ValueError(
         f'sync_devices failed for {name!r}. Found value: {x}, expected: {h}')
