@@ -26,12 +26,12 @@ class PreprocessOpsTest(tf.test.TestCase):
   def get_data(self, dtype=tf.uint8):
     return {'image': tf.random.uniform([640, 480, 3], 0, 255)}
 
-  def test_get_resize(self):
+  def test_resize(self):
     data = self.get_data()
     data = pp_ops.resize([120, 80])(data)
     self.assertEqual(data['image'].numpy().shape, (120, 80, 3))
 
-  def test_get_resize_small(self):
+  def test_resize_small(self):
     data = self.get_data()
     data = pp_ops.resize_small(240)(data)
     self.assertEqual(data['image'].numpy().shape, (320, 240, 3))
@@ -43,8 +43,13 @@ class PreprocessOpsTest(tf.test.TestCase):
         np.random.randint(0, 256, [224, 224, 3]).astype('uint8'),
         format='jpg')
     data = {'image': f.getvalue()}
-    data = pp_ops.decode_jpeg_and_inception_crop()(data)
-    self.assertEqual(data['image'].numpy().shape[-1], 3)
+    output = pp_ops.decode_jpeg_and_inception_crop(128)(data)['image']
+    self.assertEqual(output.shape, (128, 128, 3))
+
+  def test_inception_crop(self):
+    image = np.random.randint(0, 256, [224, 224, 3]).astype('uint8')
+    output = pp_ops.inception_crop(128)({'image': image})['image'].numpy()
+    self.assertEqual(output.shape, (128, 128, 3))
 
   def test_central_crop(self):
     data = self.get_data()
@@ -71,7 +76,7 @@ class PreprocessOpsTest(tf.test.TestCase):
     self.assertLessEqual(np.max(data['image'].numpy()), 0.5)
     self.assertGreaterEqual(np.min(data['image'].numpy()), 0.0)
 
-  def test_get_keep(self):
+  def test_keep(self):
     data = {'image': 1, 'labels': 2, 'something': 3}
 
     data_keep = pp_ops.keep('image', 'labels')(data)

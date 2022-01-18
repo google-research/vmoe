@@ -102,12 +102,10 @@ def decode(channels=3):
 def decode_jpeg_and_inception_crop(resize_size=None, area_min=5, area_max=100):
   """Decodes jpeg string and makes inception-style image crop.
 
-  Inception-style crop is a random image crop (its size and aspect ratio are
-  random) that was used for training Inception models, see
-  https://www.cs.unc.edu/~wliu/papers/GoogLeNet.pdf.
+  See `inception_crop` for details.
 
   Args:
-    resize_size: Resize image to [resize_size, resize_size] after crop.
+    resize_size: Resize image to this size after crop.
     area_min: minimal crop area.
     area_max: maximal crop area.
 
@@ -146,6 +144,43 @@ def flip_lr():
     return tf.image.random_flip_left_right(image)
 
   return _random_flip_lr_pp
+
+
+@InKeyOutKey()
+def inception_crop(resize_size=None, area_min=5, area_max=100,
+                   resize_method='bilinear'):
+  """Makes inception-style image crop.
+
+  Inception-style crop is a random image crop (its size and aspect ratio are
+  random) that was used for training Inception models, see
+  https://www.cs.unc.edu/~wliu/papers/GoogLeNet.pdf.
+
+  Args:
+    resize_size: Resize image to this size after crop.
+    area_min: minimal crop area.
+    area_max: maximal crop area.
+    resize_method: rezied method, see tf.image.resize docs for options.
+
+  Returns:
+    A function, that applies inception crop.
+  """
+
+  def _inception_crop(image):  # pylint: disable=missing-docstring
+    begin, size, _ = tf.image.sample_distorted_bounding_box(
+        tf.shape(image),
+        tf.zeros([0, 0, 4], tf.float32),
+        area_range=(area_min / 100, area_max / 100),
+        min_object_covered=0,  # Don't enforce a minimum area.
+        use_image_if_no_bounding_boxes=True)
+    crop = tf.slice(image, begin, size)
+    # Unfortunately, the above operation loses the depth-dimension. So we need
+    # to restore it the manual way.
+    crop.set_shape([None, None, image.shape[-1]])
+    if resize_size:
+      crop = resize(resize_size, resize_method)({'image': crop})['image']
+    return crop
+
+  return _inception_crop
 
 
 def keep(*keys):
