@@ -1,4 +1,4 @@
-# Copyright 2021 Google LLC.
+# Copyright 2022 Google LLC.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -118,7 +118,6 @@ class PeriodicSaveCheckpoint(periodic_actions.PeriodicCallback):
     if self._async_result:
       self._block_async_result(self._wait_seconds)
     self._thread_pool.close()
-    self._thread_pool.join()
 
   @classmethod
   def _makedirs(cls, workdir: str):
