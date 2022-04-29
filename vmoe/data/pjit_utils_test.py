@@ -1,4 +1,4 @@
-# Copyright 2021 Google LLC.
+# Copyright 2022 Google LLC.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -41,7 +41,7 @@ class PrefetchToDevice(parameterized.TestCase):
     # Generate random test data.
     x = np.random.normal(size=(256, 32))
     axis_resources = pjit.PartitionSpec(*axis_resources)
-    with maps.mesh(devices, axis_names):
+    with maps.Mesh(devices, axis_names):
       # Transfer data to device using explicit call to pjit, wrapping an
       # identity function. This is the expected ShardedDeviceArray.
       expected = pjit.pjit(

@@ -1,4 +1,4 @@
-# Copyright 2021 Google LLC.
+# Copyright 2022 Google LLC.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -105,7 +105,7 @@ class NoisyTopExpertsPerItemRouter(nn.Module):
 
   @nn.nowrap
   def _create_dispatcher(self, gates_softmax):
-    # Create a dispatcher implementing the TopExpertsPerItem routing algorithm,
+    # Creates a dispatcher implementing the TopExpertsPerItem routing algorithm,
     # that uses at most `num_selected_experts` per item. Notice that each
     # group is dispatched independently.
     dispatcher_kwargs = dict(**(self.dispatcher or {}))

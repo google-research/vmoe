@@ -1,4 +1,4 @@
-# Copyright 2021 Google LLC.
+# Copyright 2022 Google LLC.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -57,21 +57,21 @@ class EvaluatorTest(absltest.TestCase):
     labels = tf.random.categorical(logits=[[0., 0.]], num_samples=n)[0]
     output = tf.random.categorical(logits=[[0., 0.]], num_samples=n)[0]
     loss = tf.random.uniform((n,), minval=0.0, maxval=10.0)
-    fake = tf.concat([tf.ones((4,)), tf.zeros((n - 8,)), tf.ones((4,))], 0)
+    valid = tf.concat([tf.zeros((4,)), tf.ones((n - 8,)), tf.zeros((4,))], 0)
     dataset = tf.data.Dataset.from_tensor_slices(
         {
             'image': tf.one_hot(output, depth=2)[:, :] * loss[:, None],
             'labels': tf.one_hot(labels, depth=2),
-            '_fake': fake,
+            evaluator.VALID_KEY: valid,
         })
     dataset = dataset.batch(8, drop_remainder=True)
     expected_eval_state = evaluator.EvalState(
-        num=(n - tf.reduce_sum(fake)).numpy(),
+        num=tf.reduce_sum(valid).numpy(),
         sum_correct=tf.reduce_sum(
-            tf.cast(labels == output, tf.float32) * (1 - fake)).numpy(),
+            tf.cast(labels == output, tf.float32) * valid).numpy(),
         # Final loss will be the "loss" vector, since x[i,:] values are either
         # 0 or loss[i].
-        sum_loss=tf.reduce_sum(loss * (1 - fake)).numpy(),
+        sum_loss=tf.reduce_sum(loss * valid).numpy(),
         rngs={})
     return dataset, expected_eval_state
 
@@ -87,7 +87,7 @@ class EvaluatorTest(absltest.TestCase):
         label_pred_fn=self._label_pred_fn,
         rng_keys=[])
     # Run the evaluation.
-    with maps.mesh(np.asarray(jax.local_devices()), ('d',)):
+    with maps.Mesh(np.asarray(jax.local_devices()), ('d',)):
       eval_state = evaluator.evaluate_dataset(
           eval_step_pjit=eval_step_pjit,
           dataset=dataset,
@@ -105,7 +105,7 @@ class EvaluatorTest(absltest.TestCase):
     dataset2, _ = self._create_dataset_and_expected_state()
     datasets = {'dataset1': dataset1, 'dataset2': dataset2}
     metric_writer = mock.MagicMock(evaluator.metric_writers.MetricWriter)
-    with maps.mesh(np.asarray(jax.local_devices()), ('d',)):
+    with maps.Mesh(np.asarray(jax.local_devices()), ('d',)):
       action = evaluator.EvaluateMultipleDatasets(
           apply_fn=self._apply_fn,
           loss_fn=self._loss_fn,
@@ -151,7 +151,7 @@ class EvaluatorTest(absltest.TestCase):
     dataset, _ = self._create_dataset_and_expected_state()
     datasets = {'dataset': dataset}
     metric_writer = mock.MagicMock(evaluator.metric_writers.MetricWriter)
-    with maps.mesh(np.asarray(jax.local_devices()), ('d',)):
+    with maps.Mesh(np.asarray(jax.local_devices()), ('d',)):
       action = evaluator.EvaluateMultipleDatasets(
           apply_fn=self._apply_fn,
           loss_fn=self._loss_fn,

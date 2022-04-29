@@ -1,4 +1,4 @@
-# Copyright 2021 Google LLC.
+# Copyright 2022 Google LLC.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -13,20 +13,20 @@
 # limitations under the License.
 
 """Module with gating layers."""
-from typing import Any, Callable, Iterable, Mapping, Optional, Tuple, Type
+from typing import Any, Callable, Iterable, Mapping, Optional, Tuple, Type, Union
 
 import flax.linen as nn
 import jax.numpy as jnp
-import vit_jax.models as vit_models
+from vit_jax import models_vit
 import vmoe.moe
 import vmoe.nn.routing
 import vmoe.utils
 
 Array = jnp.ndarray
 PRNGKey = jnp.ndarray
-AddPositionEmbs = vit_models.AddPositionEmbs
+AddPositionEmbs = models_vit.AddPositionEmbs
 DType = type(jnp.float32)
-IdentityLayer = vit_models.IdentityLayer
+IdentityLayer = models_vit.IdentityLayer
 KwArgs = Mapping[str, Any]
 Metrics = Mapping[str, Array]
 Shape = Iterable[int]
@@ -44,7 +44,7 @@ def constant_initializer(constant: float) -> InitializerFn:
 
 
 # Slight modification of the VisionTransformer's MlpBlock API.
-class MlpBlock(vit_models.MlpBlock):
+class MlpBlock(models_vit.MlpBlock):
   dtype: Optional[DType] = None
   dropout_rate: float = 0.0
   deterministic: bool = False
@@ -54,8 +54,8 @@ class MlpBlock(vit_models.MlpBlock):
     return super().__call__(inputs, deterministic=self.deterministic)
 
 
-class MlpMoeWithNoisyTopExpertsPerItemRouter(nn.Module):
-  """Sparse MoE layer using the Noisy TopExpertsPerItem router.
+class MlpMoeBlock(nn.Module):
+  """Sparse MoE layer of MLPs.
 
   Attributes:
     mlp_dim: Size of the bottleneck in the MLP.
@@ -71,6 +71,7 @@ class MlpMoeWithNoisyTopExpertsPerItemRouter(nn.Module):
     dtype: DType used in this layer.
     split_rngs: If True, initializes the parameters of each expert with a
       different random seed. Otherwise, it will use the same PRNG for all.
+    router_cls: Router class used by the MLP MoE layer.
   """
   mlp_dim: int
   num_experts: int
@@ -79,7 +80,30 @@ class MlpMoeWithNoisyTopExpertsPerItemRouter(nn.Module):
   deterministic: bool = False
   router: Optional[KwArgs] = None
   dtype: Optional[DType] = None
-  split_rngs: bool = False
+  split_rngs: Union[bool, Iterable[str]] = False
+
+  @nn.nowrap
+  def create_router(self) -> nn.Module:
+    router_kwargs = dict(num_experts=self.num_experts, **(self.router or {}))
+    # By default, the router will be deterministic during inference. But we
+    # allow to override it.
+    router_kwargs['deterministic'] = router_kwargs.get('deterministic',
+                                                       self.deterministic)
+    # Create instance of the router class.
+    router_cls = router_kwargs.pop('name', 'NoisyTopExpertsPerItemRouter')
+    router_cls = getattr(vmoe.nn.routing, router_cls)
+    return router_cls(dtype=self.dtype, name='Router', **router_kwargs)
+
+  @nn.nowrap
+  def create_split_rngs(self) -> Mapping[str, bool]:
+    if isinstance(self.split_rngs, bool):
+      return {'params': self.split_rngs, 'dropout': self.split_rngs}
+    else:
+      split_rngs = set(self.split_rngs)
+      return {
+          'params': 'params' in split_rngs,
+          'dropout': 'dropout' in split_rngs,
+      }
 
   @nn.compact
   def __call__(self, inputs):
@@ -88,18 +112,10 @@ class MlpMoeWithNoisyTopExpertsPerItemRouter(nn.Module):
     # (num_groups, groups_size, hidden_size).
     inputs_shape = inputs.shape
     inputs = inputs.reshape(-1, self.group_size, inputs.shape[-1])
-    # Run the routing algorithm on the inputs to obtain a dispatcher and a
-    # dictionary of metrics (including the auxiliary loss to use).
-    router_kwargs = dict(num_experts=self.num_experts, **(self.router or {}))
-    # By default, the router will be deterministic during inference. But we
-    # allow to override it.
-    router_kwargs['deterministic'] = router_kwargs.get('deterministic',
-                                                       self.deterministic)
-    dispatcher, metrics = vmoe.nn.routing.NoisyTopExpertsPerItemRouter(
-        dtype=self.dtype, name='Router', **router_kwargs)(inputs)
+    dispatcher, metrics = self.create_router()(inputs)
     # Use the dispatcher to apply a MoE of MlpBlocks.
     mlp_moe_layer = vmoe.moe.sparse_moe_spmd(
-        MlpBlock, has_aux=False, split_rngs=self.split_rngs)(
+        MlpBlock, has_aux=False, split_rngs=self.create_split_rngs())(
             mlp_dim=self.mlp_dim,
             dropout_rate=self.dropout_rate,
             dtype=self.dtype,
@@ -199,7 +215,7 @@ class EncoderMoe(nn.Module):
     dense_mlp_cls = vmoe.utils.partialclass(
         MlpBlock, **dense_mlp_params, name='Mlp')
     moe_mlp_cls = vmoe.utils.partialclass(
-        MlpMoeWithNoisyTopExpertsPerItemRouter, **moe_mlp_params, name='Moe')
+        MlpMoeBlock, **moe_mlp_params, name='Moe')
     encoder_block_cls = vmoe.utils.partialclass(
         EncoderBlock,
         num_heads=self.num_heads,
@@ -236,6 +252,7 @@ class VisionTransformerMoe(nn.Module):
   representation_size: Optional[int] = None
   deterministic: bool = False
   head_bias_init: float = 0.0
+  encoder_cls: Type[nn.Module] = EncoderMoe
 
   @nn.compact
   def __call__(self, inputs):
@@ -251,7 +268,7 @@ class VisionTransformerMoe(nn.Module):
       cls = jnp.tile(cls, [x.shape[0], 1, 1])
       x = jnp.concatenate([cls, x], axis=1)
     # Encode tokens unsing the MoE encoder.
-    x, metrics = EncoderMoe(
+    x, metrics = self.encoder_cls(
         name='Encoder', deterministic=self.deterministic, **self.encoder)(x)
     # Get a single vector representation of the full sequence.
     if self.classifier == 'token' or self.classifier == '0':

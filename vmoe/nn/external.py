@@ -1,4 +1,4 @@
-# Copyright 2021 Google LLC.
+# Copyright 2022 Google LLC.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -15,10 +15,11 @@
 """External models wrapped to work with the V-MoE codebase."""
 import flax.linen as nn
 import ml_collections
-from vit_jax import models
+from vit_jax import models_mixer
+from vit_jax import models_vit
 
 
-class MlpMixer(models.MlpMixer):
+class MlpMixer(models_mixer.MlpMixer):
   """Official implementation of the MLP-Mixer."""
   deterministic: bool = False
 
@@ -32,7 +33,7 @@ class MlpMixer(models.MlpMixer):
     return super().__call__(inputs, train=not self.deterministic), {}
 
 
-class VisionTransformer(models.VisionTransformer):
+class VisionTransformer(models_vit.VisionTransformer):
   """Official implementation of the Vision Transformer."""
   deterministic: bool = False
 

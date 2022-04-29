@@ -1,4 +1,4 @@
-# Copyright 2021 Google LLC.
+# Copyright 2022 Google LLC.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -104,6 +104,49 @@ class NoisyTopExpertsPerItemRouterTest(absltest.TestCase):
     del m1['importance_loss']
     del m2['importance_loss']
     chex.assert_trees_all_equal_comparator(different_fn, error_msg_fn, m1, m2)
+
+
+class NoisyTopItemsPerExpertRouterTest(absltest.TestCase):
+
+  # We mock get_top_items_per_expert_dispatcher to avoid having to specify the
+  # parameters of the dispatcher during testing. The output of the
+  # NoisyTopItemsPerExpertRouter is supposed to be a dispatcher, but we will
+  # simply return the `gates_softmax`, which is fine for testing purposes.
+  @mock.patch.object(
+      routing.vmoe.moe,
+      'get_top_items_per_expert_dispatcher',
+      side_effect=lambda x, **_: (x, {}))
+  def test_forward_deterministic(self, unused_mock):
+    """Tests that output is the same given two different gating PRNG seeds."""
+    x = jnp.arange(5 * 4).reshape(1, 5, 4).astype(jnp.float32)
+    variables = {'params': {'dense': {'kernel': jnp.eye(4)}}}
+    layer = routing.NoisyTopItemsPerExpertRouter(
+        num_experts=4,
+        noise_std=1.0,
+        deterministic=True)
+    # y's are dispatch weights.
+    y1, _ = layer.apply(variables, x, rngs={'gating': jax.random.PRNGKey(0)})
+    y2, _ = layer.apply(variables, x, rngs={'gating': jax.random.PRNGKey(1)})
+    chex.assert_trees_all_close(y1, y2)
+
+  @mock.patch.object(
+      routing.vmoe.moe,
+      'get_top_items_per_expert_dispatcher',
+      side_effect=lambda x, **_: (x, {}))
+  def test_forward_not_deterministic(self, unused_mock):
+    """Tests that output is different given two different gating PRNG seeds."""
+    x = jnp.arange(5 * 4).reshape(1, 5, 4).astype(jnp.float32)
+    variables = {'params': {'dense': {'kernel': jnp.eye(4)}}}
+    layer = routing.NoisyTopItemsPerExpertRouter(
+        num_experts=4,
+        noise_std=1.0,
+        deterministic=False)
+    # y's are dispatch weights.
+    y1, _ = layer.apply(variables, x, rngs={'gating': jax.random.PRNGKey(0)})
+    y2, _ = layer.apply(variables, x, rngs={'gating': jax.random.PRNGKey(1)})
+    different_fn = lambda x, y: jnp.abs(x - y).sum() > 0.01
+    error_msg_fn = lambda x, y: f'{x} is too close to {y}'
+    chex.assert_trees_all_equal_comparator(different_fn, error_msg_fn, y1, y2)
 
 
 if __name__ == '__main__':

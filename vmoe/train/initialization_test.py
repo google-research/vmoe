@@ -1,4 +1,4 @@
-# Copyright 2021 Google LLC.
+# Copyright 2022 Google LLC.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -57,7 +57,7 @@ class InitializeFromVmoeReleaseTest(absltest.TestCase):
 
   def test_success(self):
     with self.assertLogs() as logs:
-      with maps.mesh(np.asarray(jax.local_devices()), ('d',)):
+      with maps.Mesh(np.asarray(jax.local_devices()), ('d',)):
         params = initialization.initialize_from_vmoe_release(
             params=self.params,
             axis_resources=self.axis_resources,
@@ -94,6 +94,32 @@ class InitializeFromVmoeReleaseTest(absltest.TestCase):
           mapping=[('(foo)/A', r'\1/a'), ('(foo)/B', r'\1/b')],
           keep=['.*/C'])
 
+  def test_parameter_shape_not_equal_with_reshape(self):
+    with maps.Mesh(np.asarray(jax.local_devices()), ('d',)):
+      new_shape = (1, 16)  # instead of (4, 4) for 'foo/b'.
+      init_params = flax.core.FrozenDict({
+          'foo': {
+              'A': np.zeros((4, 3), dtype=np.float32),
+              'B': np.zeros(new_shape, dtype=np.float32),
+              'C': np.zeros((3, 3), dtype=np.float32),
+          },
+      })
+      params = initialization.initialize_from_vmoe_release(
+          params=init_params,
+          axis_resources=jax.tree_map(lambda _: pjit.PartitionSpec(),
+                                      init_params),
+          prefix='/foo/bar/checkpoint',
+          mapping=[('(foo)/A', r'\1/a'), ('(foo)/B', r'\1/b')],
+          keep=['.*/C'],
+          reshape=['foo/B'])
+
+    np.testing.assert_allclose(params['foo']['A'],
+                               np.ones((4, 3), dtype=np.float32))
+    np.testing.assert_allclose(params['foo']['B'],
+                               np.ones(new_shape, dtype=np.float32))
+    np.testing.assert_allclose(params['foo']['C'],
+                               np.zeros((3, 3), dtype=np.float32))
+
 
 class InitializeFromVitTest(absltest.TestCase):
 
@@ -126,7 +152,7 @@ class InitializeFromVitTest(absltest.TestCase):
 
   def test_success(self):
     with self.assertLogs() as logs:
-      with maps.mesh(np.asarray(jax.local_devices()), ('d',)):
+      with maps.Mesh(np.asarray(jax.local_devices()), ('d',)):
         params = initialization.initialize_from_vit(
             params=self.params,
             axis_resources=self.axis_resources,

@@ -1,4 +1,4 @@
-# Copyright 2021 Google LLC.
+# Copyright 2022 Google LLC.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -29,6 +29,7 @@ from vmoe.train import trainer
 
 PartitionSpec = trainer.PartitionSpec
 Mesh = trainer.Mesh
+VALID_KEY = trainer.input_pipeline.VALID_KEY
 
 
 class CreateFlaxModelTest(absltest.TestCase):
@@ -134,7 +135,8 @@ class GetLossTest(parameterized.TestCase):
         name, **kwargs)
     key = jax.random.PRNGKey(0)
     logits = jax.random.normal(key, (8, 16))
-    train_labels = jax.random.uniform(key, (8, 16))
+    # The repeating of the training labels happens in the train loss.
+    train_labels = jax.random.uniform(key, (8 // ensemble_size, 16))
     eval_labels = jax.random.uniform(key, (8 // ensemble_size, 16))
 
     train_loss = train_loss_fn(logits, train_labels)
@@ -220,6 +222,65 @@ class InitializeTrainStateFromCheckpointTest(parameterized.TestCase):
           name='foo')
 
 
+class MixupTest(parameterized.TestCase):
+
+  @parameterized.named_parameters(
+      ('_batch', [[.6, .4]], (1, 2), [1.4, 2.4, 3.4, 4.4, 5.4, 4.]),
+      ('_example',
+       [[.6, .4], [.7, .3], [.5, .5], [1., 0.], [.9, .1], [.8, .2]], (6, 2),
+       [1.4, 2.3, 3.5, 4., 5.1, 5.0]),
+  )
+  @mock.patch.object(jax.random, 'dirichlet')
+  def test(self, alphas, shape, expected, mock_dirichlet):
+    x = jnp.asarray([1., 2., 3., 4., 5., 6.])
+    mock_dirichlet.return_value = jnp.asarray(alphas)
+    output = trainer.mixup(
+        jax.random.PRNGKey(0),
+        x,
+        concentration=10.0,  # Unused, dirichlet is mocked.
+        shape=shape)
+    np.testing.assert_allclose(output, np.asarray(expected))
+
+  def test_inconsistent_shapes_raises(self):
+    with self.assertRaisesRegex(
+        ValueError,
+        r'Mixup with inconsistent shapes..* the first 1 dims must be equal to '
+        r'\(3,\)'):
+      trainer.mixup(
+          jax.random.PRNGKey(0),
+          tree=(np.asarray([1, 2, 3]), np.asarray([1, 2, 3, 4])),
+          concentration=1)
+
+  def test_not_broadcastable_raises(self):
+    with self.assertRaisesRegex(
+        ValueError,
+        r'Mixup with inconsistent shapes..* the first 1 dims must be '
+        r'broadcastable to \(2,\)'):
+      trainer.mixup(
+          jax.random.PRNGKey(0),
+          tree=np.asarray([1, 2, 3]),
+          concentration=1,
+          shape=(2, 2))
+
+  def test_wrong_concentration_raises(self):
+    with self.assertRaisesRegex(ValueError, "Mixup 'concentration'"):
+      trainer.mixup(jax.random.PRNGKey(0), tree=np.asarray([1, 2, 3]),
+                    concentration=0)
+
+  def test_wrong_roll_axis_raises(self):
+    with self.assertRaisesRegex(ValueError, "Mixup 'roll_axis'"):
+      trainer.mixup(jax.random.PRNGKey(0), tree=np.asarray([1, 2, 3]),
+                    concentration=0, shape=(1, 2), roll_axis=1)
+
+  def test_wrong_shape_length_raises(self):
+    with self.assertRaisesRegex(ValueError, "Mixup 'shape' has length 1"):
+      trainer.mixup(
+          jax.random.PRNGKey(0),
+          tree=np.asarray([1, 2, 3]),
+          concentration=1,
+          shape=(2,))
+
+
 class ParsePartitionSpecTest(parameterized.TestCase):
 
   @parameterized.named_parameters(
@@ -232,7 +293,7 @@ class ParsePartitionSpecTest(parameterized.TestCase):
     self.assertEqual(trainer.parse_partition_spec(spec), expected)
 
 
-class TrainAndEvaluateTest(absltest.TestCase):
+class TrainAndEvaluateTest(parameterized.TestCase):
 
   def setUp(self):
     super().setUp()
@@ -253,9 +314,10 @@ class TrainAndEvaluateTest(absltest.TestCase):
     dataset = tf.data.Dataset.from_tensors({
         'image': tf.zeros((16, 32, 32, 3), dtype=tf.float32),
         'labels': tf.zeros((16, 10,), dtype=tf.float32),
-        '_fake': tf.zeros((16,), dtype=tf.bool),
+        VALID_KEY: tf.ones((16,), dtype=tf.bool),
     })
     return dataset
+
 
   @classmethod
   def create_flax_model(cls):
@@ -272,13 +334,18 @@ class TrainAndEvaluateTest(absltest.TestCase):
 
     return Model()
 
+  @parameterized.named_parameters(
+      ('_standard', {}),
+      ('_mixup', {'concentration': 0.2}),
+  )
   @mock.patch.object(trainer.metric_writers, 'create_default_writer')
   @mock.patch.object(trainer, 'create_flax_model')
   @mock.patch.object(trainer.input_pipeline, 'get_data_num_examples',
                      return_value=32)
   @mock.patch.object(trainer.input_pipeline, 'get_datasets')
-  def test(self, mock_get_datasets, unused_mock_get_data_num_examples,
-           mock_create_flax_model, mock_create_default_writer):
+  def test(self, mixup_config, mock_get_datasets,
+           unused_mock_get_data_num_examples, mock_create_flax_model,
+           mock_create_default_writer):
     config = ml_collections.ConfigDict()
     config.dataset = ml_collections.ConfigDict()
     config.dataset.train = ml_collections.ConfigDict()
@@ -289,12 +356,15 @@ class TrainAndEvaluateTest(absltest.TestCase):
     config.num_expert_partitions = jax.local_device_count()
     config.params_axis_resources = [('.*/v$', 'expert')]
     config.model = ml_collections.ConfigDict()
+    config.model_eval_overrides = ml_collections.ConfigDict()
     config.optimizer = ml_collections.ConfigDict()
     config.optimizer.name = 'sgd'
     config.optimizer.learning_rate = 1e-3
     config.optimizer.momentum = 0.9
     config.loss = ml_collections.ConfigDict()
     config.loss.name = 'softmax_xent'
+    config.mixup = ml_collections.ConfigDict(mixup_config)
+    config.extra_rng_keys = ('mixup',)
     workdir = self.create_tempdir().full_path
     mock_get_datasets.return_value = {
         'train': self.create_dataset_train(),
@@ -304,9 +374,11 @@ class TrainAndEvaluateTest(absltest.TestCase):
     mock_create_default_writer.return_value = mock.MagicMock()
     trainer.train_and_evaluate(config=config, workdir=workdir)
 
+
   @mock.patch.object(trainer.input_pipeline, 'get_datasets')
   def test_missing_train_dataset(self, mock_get_datasets):
     config = ml_collections.ConfigDict()
+    config.num_expert_partitions = jax.local_device_count()
     config.dataset = ml_collections.ConfigDict()
     workdir = self.create_tempdir().full_path
     mock_get_datasets.return_value = {}
@@ -348,6 +420,54 @@ class TreeAxisResourcesFromRegexesTest(parameterized.TestCase):
     self.assertEqual(output.params['a'], PartitionSpec('expert'))
     self.assertEqual(output.params['b'], PartitionSpec())
     self.assertEqual(output.params['c'], PartitionSpec(('expert', 'width')))
+
+
+class WrapTrainStepWithMixupTest(parameterized.TestCase):
+
+  @classmethod
+  def train_step_fn(cls, state, images, unused_labels, extra):
+    rngs = {'foo': jnp.ones_like(state.rngs['foo'])}
+    if isinstance(state.rngs, trainer.flax.core.FrozenDict):
+      rngs = trainer.flax.core.freeze(rngs)
+    state = state.replace(rngs=rngs)
+    state = state.replace(step=state.step + 1)
+    return state, {'extra': extra, 'images': images}
+
+  @parameterized.parameters((None,), (0.,))
+  def test_no_concentration(self, concentration):
+    fn = trainer.wrap_train_step_with_mixup(self.train_step_fn,
+                                            concentration=concentration)
+    self.assertEqual(fn, self.train_step_fn)
+
+  @parameterized.parameters(('batch',), ('device',), ('example',))
+  def test_granularity(self, granularity):
+    # Wrap it with mixup.
+    wrapped_train_state_fn = jax.jit(
+        trainer.wrap_train_step_with_mixup(
+            self.train_step_fn, concentration=1.0, granularity=granularity))
+    # PRNGKeys used by the train step.
+    rngs = {'mixup': jax.random.PRNGKey(1), 'foo': jax.random.PRNGKey(3)}
+    # A trivial TrainState.
+    train_state = trainer.TrainState(
+        step=0, apply_fn=lambda _: _, params={}, tx=lambda _: _, opt_state=(),
+        rngs=rngs)
+    x = (jnp.arange(16 * 32, dtype=jnp.float32).reshape(16, 32) + 1) * 100
+    y = jnp.arange(16, dtype=jnp.float32)
+    train_state, metrics = wrapped_train_state_fn(train_state, x, y, -1.0)
+    self.assertEqual(train_state.step, 1)
+    self.assertEqual(metrics['extra'], -1.0)
+    # Check that the images passed to the wrapped train_state were modified.
+    np.testing.assert_array_less(np.zeros_like(x),
+                                 np.abs(metrics['images'] - x))
+    # Convert PRNGKeys to int64 to subtract them.
+    rngs = jax.tree_map(lambda x: np.asarray(x, dtype=np.int64), rngs)
+    new_rngs = jax.tree_map(lambda x: np.asarray(x, dtype=np.int64),
+                            train_state.rngs)
+    # Check that both PRNGKeys have been updated.
+    np.testing.assert_array_less(
+        np.zeros_like(rngs['mixup']), np.abs(rngs['mixup'] - new_rngs['mixup']))
+    np.testing.assert_array_less(
+        np.zeros_like(rngs['foo']), np.abs(rngs['foo'] - new_rngs['foo']))
 
 
 if __name__ == '__main__':

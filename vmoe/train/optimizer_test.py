@@ -1,4 +1,4 @@
-# Copyright 2021 Google LLC.
+# Copyright 2022 Google LLC.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -152,7 +152,20 @@ class GradientClippingTest(parameterized.TestCase):
   )
   def test(self, kwargs, expected):
     init_fn, update_fn = optimizer.gradient_clipping(**kwargs)
-    x = {'a': 1., 'b': 2.}
+    x = {'a': jnp.asarray(1.), 'b': jnp.asarray(2.)}
+    y, _ = update_fn(x, init_fn(x))
+    chex.assert_trees_all_close(y, expected)
+
+
+class GradientScalingTest(parameterized.TestCase):
+
+  @parameterized.named_parameters(
+      ('_empty', [], {'a': 2., 'b': 2.}),
+      ('_scale', [('a', 2), ('b', 4)], {'a': 4., 'b': 8.}),
+  )
+  def test(self, scales, expected):
+    init_fn, update_fn = optimizer.gradient_scaling(scales)
+    x = {'a': jnp.asarray(2.), 'b': jnp.asarray(2.)}
     y, _ = update_fn(x, init_fn(x))
     chex.assert_trees_all_close(y, expected)
 

@@ -1,4 +1,4 @@
-# Copyright 2021 Google LLC.
+# Copyright 2022 Google LLC.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -32,6 +32,11 @@ PyTree = Any
 ThreadPool = multiprocessing.pool.ThreadPool
 
 
+def _compile(sequence: Sequence[str]):
+  return (re.compile('|'.join(f'(?:{regex})' for regex in sequence))
+          if sequence else None)
+
+
 def initialize_from_vmoe_release(
     *,
     params: PyTree,
@@ -41,6 +46,7 @@ def initialize_from_vmoe_release(
     keep: Sequence[str] = (),
     thread_pool: Optional[ThreadPool] = None,
     mesh: Optional[maps.Mesh] = None,
+    reshape: Sequence[str] = ()
 ) -> PyTree:
   """Initializes parameters from a V-MoE released checkpoint.
 
@@ -65,6 +71,9 @@ def initialize_from_vmoe_release(
     mesh: Logical mesh of devices used to run the model. This is used to copy
       the restored parameters to devices. If None, the current active mesh will
       be used.
+    reshape: Like `keep`, a sequence of regular expressions. If a name of a
+      parameter p in `params` matches any of these, the correspoding restored
+      parameter p_restored will be reshaped to match the shape of p.
 
   Returns:
     A PyTree as the input `params` with (some of) the values loaded from the
@@ -72,8 +81,8 @@ def initialize_from_vmoe_release(
   """
   # Compile strings representing regexes.
   mapping = [(re.compile(regex), repl) for regex, repl in mapping]
-  keep = (re.compile('|'.join(f'(?:{regex})' for regex in keep))
-          if keep else None)
+  keep = _compile(keep)
+  reshape = _compile(reshape)
   is_frozen_dict = isinstance(params, flax.core.FrozenDict)
   # Map current axis_resources to the names expected in the checkpoint.
   axis_resources_flat = flax.traverse_util.flatten_dict(
@@ -110,6 +119,8 @@ def initialize_from_vmoe_release(
     ckpt_value = ckpt_params_flat[ckpt_key]
     if value.shape == ckpt_value.shape:
       params_flat[key_tuple] = ckpt_value
+    elif reshape and reshape.search(key):
+      params_flat[key_tuple] = ckpt_value.reshape(value.shape)
     elif key.endswith('/posembed_input/pos_embedding'):
       params_flat[key_tuple] = _zoom_position_embedding(
           ckpt_value, value)
@@ -174,10 +185,8 @@ def initialize_from_vit(
   """
   # Compile strings representing regexes.
   mapping = [(re.compile(regex), repl) for regex, repl in mapping]
-  keep = (re.compile('|'.join(f'(?:{regex})' for regex in keep))
-          if keep else None)
-  broadcast = (re.compile('|'.join(f'(?:{regex})' for regex in broadcast))
-               if broadcast else None)
+  keep = _compile(keep)
+  broadcast = _compile(broadcast)
   is_frozen_dict = isinstance(params, flax.core.FrozenDict)
   # Get the parameters from the current training state.
   if is_frozen_dict:
@@ -251,7 +260,7 @@ def _map_name(name: str, map_regexes: Sequence[Tuple[re.Pattern, str]]) -> str:
 
 def _pjit_donate_to_device(data, axis_resources, mesh):
   mesh = mesh or maps.thread_resources.env.physical_mesh
-  with maps.mesh(mesh.devices, mesh.axis_names):
+  with maps.Mesh(mesh.devices, mesh.axis_names):
     return pjit.pjit(
         fun=lambda x: x,
         in_axis_resources=(axis_resources,),

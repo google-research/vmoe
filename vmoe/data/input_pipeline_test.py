@@ -1,4 +1,4 @@
-# Copyright 2021 Google LLC.
+# Copyright 2022 Google LLC.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -117,13 +117,14 @@ class InputPipelineTest(absltest.TestCase):
       # Eval data is only iterated once, which in this case means 1 batch.
       data = [x for _, x in zip(range(10), iter(data))]
       self.assertLen(data, 1)
-      # Eval data has a '_fake' field, since fake examples were padded.
-      self.assertSetEqual(set(data[0].keys()), {'x', 'y', '_fake'})
+      # Eval data has a '__valid__' field, since fake examples were added.
+      self.assertSetEqual(set(data[0].keys()),
+                          {'x', 'y', input_pipeline.VALID_KEY})
       # Eval data is not shuffled, and the fake data corresponds to the first
       # element.
       self.assertTupleEqual(tuple(data[0]['x'].numpy()), (0, 1, 2, 0, 0))
-      self.assertTupleEqual(tuple(data[0]['_fake'].numpy()),
-                            (False, False, False, True, True))
+      self.assertTupleEqual(tuple(data[0][input_pipeline.VALID_KEY].numpy()),
+                            (True, True, True, False, False))
 
   def test_get_datasets(self):
     config = ml_collections.ConfigDict({

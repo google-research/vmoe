@@ -1,4 +1,4 @@
-# Copyright 2021 Google LLC.
+# Copyright 2022 Google LLC.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -29,6 +29,7 @@ from absl.testing import parameterized
 import chex
 import jax
 import jax.numpy as jnp
+import numpy as np
 from vmoe.nn import ensemble_routing as ens_routing
 from vmoe.nn import routing
 
@@ -184,6 +185,49 @@ class NoisyTopExpertsPerItemEnsembleRouterTest(parameterized.TestCase):
 
     out12 = ens_routing.reshape_from_diag_blocks(diag_blocks12)
     self.assertAlmostEqual(dist(out12, full_block_diag_matrix12), 0.0)
+
+  def test_reshape_to_and_from_group_representation(self):
+    num_images = 4
+    ensemble_size = 2
+    num_rep_images = num_images * ensemble_size
+    num_tokens_per_image = 3
+    hidden_size = 1
+    num_groups = 2
+    group_size = (num_rep_images * num_tokens_per_image) // num_groups
+
+    def generate_image_tokens_with_repeat_ensemble_structure():
+      x = []
+      for i in range(num_images):
+        for e in range(ensemble_size):
+          # (i, e, t) are the image, ensemble member and token indices.
+          # The inner-most [] accounts for hidden_size = 1.
+          x += [[[f'image={i},ensemble={e},token={t}']
+                 for t in range(num_tokens_per_image)]]
+      return np.array(x)
+
+    x = generate_image_tokens_with_repeat_ensemble_structure()
+    expected_shape = (num_rep_images, num_tokens_per_image, hidden_size)
+    self.assertEqual(x.shape, expected_shape)
+
+    y = ens_routing.reshape_to_group_size_representation(x, group_size,
+                                                         ensemble_size)
+    expected_shape = (num_groups, group_size, hidden_size)
+    self.assertEqual(y.shape, expected_shape)
+
+    # In each group g, we check that indexing the reshaped tensor y[g] by the
+    # ensemble member e only contains tokens related to the ensemble member e.
+    # The assert statements below would fail if we were to naively use
+    #   y = x.reshape((num_groups, group_size, hidden_size)).
+    for g in range(num_groups):
+      shape = (group_size // ensemble_size, ensemble_size, hidden_size)
+      y_g = y[g].reshape(shape)
+      for e in range(ensemble_size):
+        self.assertTrue(all(f'ensemble={e}' in token for token in y_g[:, e, 0]))
+
+    z = ens_routing.reshape_from_group_size_representation(
+        y, num_tokens_per_image, ensemble_size)
+    self.assertSequenceEqual(list(z.flatten()), list(x.flatten()))
+
 
 if __name__ == '__main__':
   absltest.main()

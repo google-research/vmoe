@@ -1,4 +1,4 @@
-# Copyright 2021 Google LLC.
+# Copyright 2022 Google LLC.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -14,9 +14,26 @@
 
 """Module with several util functions."""
 import collections.abc
-from typing import Any, Callable, Iterator, Tuple, Type
+import functools
+from typing import Any, Callable, Dict, Iterator, Tuple, Type
 
 import jax
+
+PRNGKey = jax.random.KeyArray
+
+
+@functools.lru_cache()
+def make_rngs(rng_keys: Tuple[str, ...], seed: int = 0) -> Dict[str, PRNGKey]:
+  """Creates a dictionary of PRNGKeys from a tuple of key names and a seed."""
+
+  @functools.partial(jax.jit, backend='cpu')
+  def _make_rngs():
+    if not rng_keys:
+      return dict()
+    rngs = jax.random.split(jax.random.PRNGKey(seed), len(rng_keys))
+    return dict(zip(rng_keys, rngs))
+
+  return _make_rngs()
 
 
 def partialclass(cls: Type[Any], *base_args, **base_kwargs):

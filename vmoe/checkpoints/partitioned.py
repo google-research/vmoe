@@ -1,4 +1,4 @@
-# Copyright 2021 Google LLC.
+# Copyright 2022 Google LLC.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -91,8 +91,8 @@ def restore_checkpoint(*,
     axis_resources = jax.tree_map(lambda _: PartitionSpec(), index)
   # Flatten index and axis_resources. Check that the two are compatible.
   index, struct = jax.tree_flatten(index)
-  _, axis_resources, struct2 = _prepare_axis_resources(axis_resources,
-                                                       'axis_resources')
+  _, axis_resources, struct2, _ = _prepare_axis_resources(
+      axis_resources, 'axis_resources')
   if struct != struct2:
     raise ValueError(f'The tree structs do not match.\n'
                      f'index: {struct}\n'
@@ -313,8 +313,8 @@ def _make_save_checkpoint_filepath_map(
   """Makes a dictionary of filepaths mapping to the content that must be serialized."""
   filepath_map = {}  # Result.
   tree_leaves, struct = jax.tree_flatten(tree)
-  _, axis_resources, struct2 = _prepare_axis_resources(axis_resources,
-                                                       'axis_resources')
+  _, axis_resources, struct2, _ = _prepare_axis_resources(
+      axis_resources, 'axis_resources')
   if struct != struct2:
     raise ValueError('The tree structs do not match.\n'
                      f'tree: {struct}\n'

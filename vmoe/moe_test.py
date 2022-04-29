@@ -1,4 +1,4 @@
-# Copyright 2021 Google LLC.
+# Copyright 2022 Google LLC.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -17,6 +17,7 @@ from unittest import mock
 
 from absl.testing import absltest
 from absl.testing import parameterized
+import chex
 import flax.core
 import flax.linen as nn
 import jax
@@ -64,6 +65,12 @@ class DispatcherTest(parameterized.TestCase):
          [6 * .3, 6 * .3, 6 * .3, 6 * .3]],
     ], dtype=jnp.float32)
     np.testing.assert_array_almost_equal(output, expected)
+
+  def test_compute_capacity_raises_wrong_input_values(self):
+    with self.assertRaisesRegex(
+        ValueError, 'The values .* lead to capacity .*, but it must be greater '
+        'than or equal to 1'):
+      moe._compute_capacity(128, 32, -1.0)
 
   @parameterized.named_parameters(
       ('none', None, None),
@@ -132,6 +139,9 @@ class DispatcherTest(parameterized.TestCase):
     self.assertEqual(bfloat16_dispatcher.dispatch(x).dtype, jnp.float32)
     self.assertEqual(bfloat16_dispatcher.combine(x).dtype, jnp.float32)
 
+
+class GetTopExpertsPerItemDispatcherTest(parameterized.TestCase):
+
   # The following tests represent the same scenario. There are three items in
   # a group, and three experts, each with capacity = 2.
   #
@@ -191,12 +201,36 @@ class DispatcherTest(parameterized.TestCase):
         gates, name, num_selected_experts=2, capacity=2, batch_priority=False)
     self.assertIsInstance(dispatcher, expected_class)
 
-  def test_get_to_experts_per_item_dispatcher_unknown(self):
+  @parameterized.named_parameters(
+      ('einsum', 'einsum',
+       '_get_top_experts_per_item_einsum_dispatcher'),
+      ('indices', 'indices',
+       '_get_top_experts_per_item_expert_indices_dispatcher'),
+  )
+  def test_get_top_experts_per_item_dispatcher_capacity_factor(self, name,
+                                                               mock_fn_name):
+    gates = jnp.zeros((32, 32))
+    with mock.patch.object(moe, mock_fn_name) as mock_fn:
+      _ = moe.get_top_experts_per_item_dispatcher(
+          gates, name, num_selected_experts=2, capacity=None,
+          capacity_factor=1.0, batch_priority=False)
+    expected_capacity = 4  # increase_to_multiple_of_4(ceil(32 * 2 / 32)).
+    mock_fn.assert_called_once_with(mock.ANY, 2, expected_capacity, False)
+
+  def test_get_top_experts_per_item_dispatcher_unknown(self):
     gates = jnp.zeros((4, 32))
     with self.assertRaisesRegex(ValueError, 'Unknown dispatcher type'):
       moe.get_top_experts_per_item_dispatcher(
           gates, name='foo', num_selected_experts=2, capacity=2,
           batch_priority=False)
+
+  def test_get_top_experts_per_item_dispatcher_missing_capacity(self):
+    gates = jnp.zeros((4, 32))
+    with self.assertRaisesRegex(
+        ValueError, "You must specify either 'capacity' or 'capacity_factor'"):
+      moe.get_top_experts_per_item_dispatcher(
+          gates, name='foo', num_selected_experts=2, capacity=None,
+          capacity_factor=None, batch_priority=False)
 
 
 class DummyExpert(nn.Module):
@@ -279,10 +313,10 @@ class SparseMoeSpmdLayerTest(parameterized.TestCase):
     return dispatcher
 
   @parameterized.named_parameters(
-      ('einsum_false', '_generate_dispatcher_einsum', False),
-      ('einsum_true', '_generate_dispatcher_einsum', True),
-      ('indices_false', '_generate_dispatcher_indices', False),
-      ('indices_true', '_generate_dispatcher_indices', True),
+      ('einsum_false', '_generate_dispatcher_einsum', {'params': False}),
+      ('einsum_true', '_generate_dispatcher_einsum', {'params': True}),
+      ('indices_false', '_generate_dispatcher_indices', {'params': False}),
+      ('indices_true', '_generate_dispatcher_indices', {'params': True}),
   )
   def test_initialize_split_rngs(self, generate_dispatcher_fn, split_rngs):
     num_devices = 4
@@ -304,7 +338,7 @@ class SparseMoeSpmdLayerTest(parameterized.TestCase):
     # If split_rngs=True, each expert is initialized using its own rng.
     # If split_rngs=False, all experts are initialized using the same rng.
     self.assertLen(set([hash(np.asarray(row).tobytes()) for row in p]),
-                   4 if split_rngs else 1)
+                   4 if split_rngs['params'] else 1)
 
   @parameterized.named_parameters(
       ('einsum_devices_equal_to_experts',
@@ -362,7 +396,7 @@ class SparseMoeSpmdLayerTest(parameterized.TestCase):
     # init function on that mesh.
     devices = np.asarray(jax.devices()[:num_devices])
     devices = devices.reshape(num_experts, num_devices // num_experts)
-    with maps.mesh(devices, ('expert', 'replica')):
+    with maps.Mesh(devices, ('expert', 'replica')):
       return init_pjit(jax.random.PRNGKey(0))
 
   def _run_apply(self, batch_size, group_size, capacity, num_experts,
@@ -372,7 +406,8 @@ class SparseMoeSpmdLayerTest(parameterized.TestCase):
     data_partition_spec = pjit.PartitionSpec(('expert', 'replica'))
 
     def apply(variables):
-      moe_layer = moe.sparse_moe_spmd(DummyExpert)()
+      moe_layer = moe.sparse_moe_spmd(
+          DummyExpert, split_rngs={'params': False})()
       x = self._generate_data(batch_size, group_size, data_partition_spec)
       dispatcher = getattr(self, generate_dispatcher_fn)(
           batch_size, group_size, num_experts, capacity, data_partition_spec)
@@ -396,7 +431,7 @@ class SparseMoeSpmdLayerTest(parameterized.TestCase):
       devices = devices.reshape(num_experts, num_devices // num_experts)
     else:
       devices = devices.reshape(num_devices, 1)
-    with maps.mesh(devices, ('expert', 'replica')):
+    with maps.Mesh(devices, ('expert', 'replica')):
       return apply_pjit(variables)
 
 

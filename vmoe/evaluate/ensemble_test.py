@@ -1,4 +1,4 @@
-# Copyright 2021 Google LLC.
+# Copyright 2022 Google LLC.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -25,56 +25,77 @@ from vmoe.evaluate import ensemble
 
 class EnsembleTest(parameterized.TestCase):
 
-  @parameterized.parameters(1, 3, 5)
-  def test_ensemble_softmax_xent(self, ensemble_size):
-    batch_size, num_classes = 16, 3
-    logits_3d_shape = (ensemble_size, batch_size, num_classes)
-    logits_2d_shape = (ensemble_size * batch_size, num_classes)
+  @parameterized.named_parameters(
+      ('ensemble_size_1', 1, [1, 0, 1, 0]),
+      ('ensemble_size_2', 2, [1, 1]),
+      ('ensemble_size_4', 4, [1]),
+  )
+  def test_label_pred_ensemble_softmax(self, ensemble_size, expected_labels):
+    p = jnp.asarray([[.1, .9], [.8, .2], [.3, .7], [.6, .3]])
+    logits = jnp.log(p)
+    labels = ensemble.label_pred_ensemble_softmax(logits, ensemble_size)
+    np.testing.assert_allclose(labels, expected_labels)
 
-    key = jax.random.PRNGKey(666)
-    logits_3d = jax.random.normal(key, logits_3d_shape)
-    # The ensemble softmax CE assumes the logits have a structure corresponding
-    # to jnp.repeat(..., ensemble_size).
-    logits_2d_with_repeat = np.zeros(logits_2d_shape)
-    for e in range(ensemble_size):
-      logits_2d_with_repeat[e::ensemble_size] = logits_3d[e]
-    logits_2d_with_repeat = jnp.asarray(logits_2d_with_repeat)
+  @parameterized.named_parameters(
+      ('ensemble_size_1', 1, [0., 1., 0., 1.],
+       [-np.log(.1), -np.log(.8), -np.log(.3), -np.log(.6)]),
+      ('ensemble_size_2', 2, [0., 1.],
+       [-np.log(.1), -np.log(.2), -np.log(.7), -np.log(.6)]),
+      ('ensemble_size_4', 4, [1.],
+       [-np.log(.9), -np.log(.8), -np.log(.7), -np.log(.6)]),
+  )
+  def test_ensemble_softmax_xent_train(self, ensemble_size, labels,
+                                       expected_loss):
+    p = jnp.asarray([[.1, .9], [.2, .8], [.3, .7], [.4, .6]])
+    logits = jnp.log(p)
+    labels = jax.nn.one_hot(labels, num_classes=2)
+    loss = ensemble.ensemble_softmax_xent_train(logits, labels, ensemble_size)
+    np.testing.assert_allclose(loss, expected_loss, rtol=1e-5)
 
-    labels = jnp.asarray([i % num_classes for i in range(batch_size)])
-    one_hot_labels = jax.nn.one_hot(labels, num_classes)
+  @parameterized.named_parameters(
+      ('ensemble_size_1', 1, [0., 1., 0., 1.],
+       [-np.log(.1), -np.log(.8), -np.log(.3), -np.log(.6)]),
+      ('ensemble_size_2', 2, [0., 1.], [-np.log(.15), -np.log(.65)]),
+      ('ensemble_size_4', 4, [1.], [-np.log((.9 + .8 + .7 + .6) / 4)]),
+  )
+  def test_ensemble_softmax_xent_eval(self, ensemble_size, labels,
+                                      expected_loss):
+    p = jnp.asarray([[.1, .9], [.2, .8], [.3, .7], [.4, .6]])
+    logits = jnp.log(p)
+    labels = jax.nn.one_hot(labels, num_classes=2)
+    loss = ensemble.ensemble_softmax_xent_eval(logits, labels, ensemble_size)
+    np.testing.assert_allclose(loss, expected_loss, rtol=1e-5)
 
-    xent = ensemble.ensemble_softmax_xent(logits_2d_with_repeat,
-                                          one_hot_labels, ensemble_size)
+  @parameterized.named_parameters(
+      ('ensemble_size_1', 1, [[0.], [1.], [0.], [1.]],
+       [-np.log1p(-.1), -np.log(.2), -np.log1p(-.3), -np.log(.4)]),
+      ('ensemble_size_2', 2, [[0.], [1.]],
+       [-np.log1p(-.1), -np.log1p(-.2), -np.log(.3), -np.log(.4)]),
+      ('ensemble_size_4', 4, [[1.]],
+       [-np.log(.1), -np.log(.2), -np.log(.3), -np.log(.4)]),
+  )
+  def test_ensemble_sigmoid_xent_train(self, ensemble_size, labels,
+                                       expected_loss):
+    p = jnp.asarray([[.1], [.2], [.3], [.4]])
+    logits = jnp.log(p) - jnp.log1p(-p)
+    labels = jnp.asarray(labels)
+    loss = ensemble.ensemble_sigmoid_xent_train(logits, labels, ensemble_size)
+    np.testing.assert_allclose(loss, expected_loss, rtol=1e-5)
 
-    ensemble_softmax = jnp.mean(jax.nn.softmax(logits_3d), 0)
-    expected_xent = jnp.asarray([
-        -jnp.log(ensemble_softmax[i, labels[i]]) for i in range(batch_size)
-    ])
+  @parameterized.named_parameters(
+      ('ensemble_size_1', 1, [[0.], [1.], [0.], [1.]],
+       [-np.log1p(-.1), -np.log(.2), -np.log1p(-.3), -np.log(.4)]),
+      ('ensemble_size_2', 2, [[0.], [1.]], [-np.log1p(-.15), -np.log(.35)]),
+      ('ensemble_size_4', 4, [[1.]], [-np.log(.25)]),
+  )
+  def test_ensemble_sigmoid_xent_eval(self, ensemble_size, labels,
+                                      expected_loss):
+    p = jnp.asarray([[.1], [.2], [.3], [.4]])
+    logits = jnp.log(p) - jnp.log1p(-p)
+    labels = jnp.asarray(labels)
+    loss = ensemble.ensemble_sigmoid_xent_eval(logits, labels, ensemble_size)
+    np.testing.assert_allclose(loss, expected_loss, rtol=1e-5)
 
-    self.assertSequenceAlmostEqual(list(expected_xent), list(xent), places=5)
-
-  @parameterized.parameters(1, 3, 5)
-  def test_label_pred_ensemble_softmax(self, ensemble_size):
-    batch_size, num_classes = 16, 8
-    logits_3d_shape = (ensemble_size, batch_size, num_classes)
-    logits_2d_shape = (ensemble_size * batch_size, num_classes)
-
-    key = jax.random.PRNGKey(666)
-    logits_3d = jax.random.normal(key, logits_3d_shape)
-    # The ensemble softmax CE assumes the logits have a structure corresponding
-    # to jnp.repeat(..., ensemble_size).
-    logits_2d_with_repeat = np.zeros(logits_2d_shape)
-    for e in range(ensemble_size):
-      logits_2d_with_repeat[e::ensemble_size] = logits_3d[e]
-    logits_2d_with_repeat = jnp.asarray(logits_2d_with_repeat)
-
-    labels = ensemble.label_pred_ensemble_softmax(logits_2d_with_repeat,
-                                                  ensemble_size)
-
-    ensemble_softmax = jnp.mean(jax.nn.softmax(logits_3d), 0)
-    expected_labels = jnp.argmax(ensemble_softmax, 1)
-
-    self.assertSequenceEqual(list(labels), list(expected_labels))
 
 if __name__ == '__main__':
   absltest.main()

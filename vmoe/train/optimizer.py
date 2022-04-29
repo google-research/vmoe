@@ -1,4 +1,4 @@
-# Copyright 2021 Google LLC.
+# Copyright 2022 Google LLC.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -16,7 +16,7 @@
 import re
 from typing import Any, Callable, Mapping, Optional, Sequence, Tuple, Union
 
-import flax.core
+import flax.serialization
 import flax.traverse_util
 import optax
 import vmoe.train.schedule as schedule
@@ -69,16 +69,18 @@ def add_decayed_weights(
   def update_fn(updates, state, params):
     if params is None:
       raise ValueError('Not passing `params` when calling `update`.')
-    frozen = isinstance(updates, flax.core.FrozenDict)
-    updates = flax.traverse_util.flatten_dict(flax.core.unfreeze(updates))
-    params = flax.traverse_util.flatten_dict(flax.core.unfreeze(params))
-    updates = dict(utils.safe_map(
-        lambda k, g, p: (k, g + weight_decay_fn('/'.join(k)) * p),
-        updates.keys(),
-        updates.values(),
-        params.values()))
-    updates = flax.traverse_util.unflatten_dict(updates)
-    return flax.core.freeze(updates) if frozen else updates, state
+    flatupdates = flax.traverse_util.flatten_dict(
+        flax.serialization.to_state_dict(updates), sep='/')
+    flatparams = flax.traverse_util.flatten_dict(
+        flax.serialization.to_state_dict(params), sep='/')
+    flatupdates = dict(utils.safe_map(
+        lambda k, g, p: (k, g + weight_decay_fn(k) * p),
+        flatupdates.keys(),
+        flatupdates.values(),
+        flatparams.values()))
+    updates = flax.serialization.from_state_dict(
+        updates, flax.traverse_util.unflatten_dict(flatupdates, sep='/'))
+    return updates, state
 
   return optax.GradientTransformation(init_fn, update_fn)
 
@@ -92,10 +94,18 @@ def create_optimizer(
     weight_decay: Optional[WeightDecay] = None,
     frozen_pattern: Optional[Union[str, Sequence[str]]] = None,
     trainable_pattern: Optional[Union[str, Sequence[str]]] = None,
+    gradient_scale: Optional[Sequence[Tuple[str, float]]] = None,
     **optim_kwargs) -> optax.GradientTransformation:
   """Creates an optax optimizer."""
+  ops = []
+  # Optionally, apply a scale factor to some gradients.
+  # WARNING: Use this with caution. Notice that this is NOT equivalent to having
+  # a specific learning rate per parameter, since the scale that you use here
+  # will affect the state of the optimizers like momentum.
+  if gradient_scale:
+    ops.append(gradient_scaling(gradient_scale))
   # Optionally, add gradient clipping.
-  ops = [gradient_clipping(**(gradient_clip or {}))]
+  ops.append(gradient_clipping(**(gradient_clip or {})))
   # Optimizer-dependant scaling of gradients.
   # Note: we don't use optax aliases (e.g. optax.adam, optax.sgd, ...) because
   # we want to control explicitly how to add weight decay.
@@ -145,14 +155,14 @@ def freeze_weights(
   pattern = re.compile(pattern)
 
   def frozen_fn(params: optax.Params) -> PyTree:
-    frozen = isinstance(params, flax.core.FrozenDict)
-    flatparams = flax.traverse_util.flatten_dict(flax.core.unfreeze(params))
+    flatparams = flax.traverse_util.flatten_dict(
+        flax.serialization.to_state_dict(params), sep='/')
     output = {
-        key: search_true if pattern.search('/'.join(key)) else search_false
+        key: search_true if pattern.search(key) else search_false
         for key, value in flatparams.items()
     }
-    output = flax.traverse_util.unflatten_dict(output)
-    return flax.core.freeze(output) if frozen else output
+    return flax.serialization.from_state_dict(
+        params, flax.traverse_util.unflatten_dict(output, sep='/'))
 
   return optax.masked(optax.set_to_zero(), frozen_fn)
 
@@ -171,6 +181,50 @@ def gradient_clipping(
   if absolute_value:
     return optax.clip(absolute_value)
   return optax.identity()
+
+
+def gradient_scaling(
+    scales: Sequence[Tuple[str, float]]) -> optax.GradientTransformation:
+  """Optionally scales gradients by a given factor.
+
+  Example:
+    gradient_scaling([
+      ('Encoder/Moe/Mlp', 8.),  # Scale MLP gradients in MoE by a factor of 8.
+    ])
+
+  Args:
+    scales: A sequence of pairs (regex, value). Each gradient is scaled by the
+      value paired with the first regex that matches (or 1.0 if none matches).
+
+  Returns:
+    An optax.GradientTransformation object.
+  """
+  if not scales:
+    return optax.identity()
+
+  scales = [(re.compile(k), v) for k, v in scales]
+
+  def scale_fn(key):
+    for regex, value in scales:
+      if regex.search(key):
+        return value
+    return 1.
+
+  def init_fn(_):
+    return optax.EmptyState()
+
+  def update_fn(updates, state, params=None):
+    del params
+    flatupdates = flax.traverse_util.flatten_dict(
+        flax.serialization.to_state_dict(updates), sep='/')
+    flatupdates = dict(
+        utils.safe_map(lambda k, g: (k, g * scale_fn(k)),
+                       flatupdates.keys(), flatupdates.values()))
+    updates = flax.serialization.from_state_dict(
+        updates, flax.traverse_util.unflatten_dict(flatupdates, sep='/'))
+    return updates, state
+
+  return optax.GradientTransformation(init_fn, update_fn)
 
 
 def trace_momentum(momentum: Optional[float] = None, **kwargs):

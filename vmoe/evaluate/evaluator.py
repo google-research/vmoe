@@ -1,4 +1,4 @@
-# Copyright 2021 Google LLC.
+# Copyright 2022 Google LLC.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -15,7 +15,7 @@
 """Classes and functions useful for evaluating models."""
 import functools
 import time
-from typing import Any, Callable, Dict, Iterable, Mapping, Optional, Sequence, Tuple
+from typing import Any, Callable, Dict, Iterable, Mapping, Optional, Sequence
 
 import cachetools
 from clu import metric_writers
@@ -30,14 +30,13 @@ import tensorflow as tf
 from vmoe import utils
 from vmoe.data import input_pipeline
 
-
 Array = jnp.ndarray
+EvalStepPjitFn = Callable[['EvalState', 'PyTree', Array, Array, Array],
+                          'EvalState']
 PartitionSpec = pjit.PartitionSpec
 PRNGKey = jnp.ndarray
 PyTree = Any
-
-EvalStepPjitFn = Callable[['EvalState', PyTree, Array, Array, Array],
-                          'EvalState']
+VALID_KEY = input_pipeline.VALID_KEY
 
 
 class EvalState(flax.struct.PyTreeNode):
@@ -157,14 +156,14 @@ class EvaluateMultipleDatasets(periodic_actions.PeriodicCallback):
           num=jax.ShapeDtypeStruct(shape=(), dtype=jnp.float32),
           sum_correct=jax.ShapeDtypeStruct(shape=(), dtype=jnp.float32),
           sum_loss=jax.ShapeDtypeStruct(shape=(), dtype=jnp.float32),
-          rngs=make_rngs(rng_keys, seed))
+          rngs=utils.make_rngs(rng_keys, seed))
       t0 = time.time()
       args = utils.tree_shape_dtype_struct((
           eval_state,
           params,
           datasets[name].element_spec['image'],
           datasets[name].element_spec['labels'],
-          datasets[name].element_spec['_fake']))
+          datasets[name].element_spec[VALID_KEY]))
       eval_step_pjit_ds = eval_step_pjit.lower(*args).compile()
       t1 = time.time()
       metric_writer.write_scalars(train_step, {f'{name}/compile_secs': t1 - t0})
@@ -211,11 +210,11 @@ def evaluate_dataset(
       num=np.zeros((), dtype=np.float32),
       sum_correct=np.zeros((), dtype=np.float32),
       sum_loss=np.zeros((), dtype=np.float32),
-      rngs=make_rngs(tuple(rng_keys), seed))
+      rngs=utils.make_rngs(tuple(rng_keys), seed))
   eval_iter = input_pipeline.make_dataset_iterator(dataset)
   for batch in eval_iter:
     eval_state = eval_step_pjit(eval_state, params, batch['image'],
-                                batch['labels'], batch['_fake'])
+                                batch['labels'], batch[VALID_KEY])
   return jax.tree_map(lambda x: x.block_until_ready(), eval_state)
 
 
@@ -224,21 +223,20 @@ def evaluate_step(
     params: PyTree,
     images: Array,
     labels: Array,
-    fake: Array,
+    valid: Array,
     apply_fn: Callable[..., Any],
     loss_fn: Callable[[Array, Array], Array],
     label_pred_fn: Callable[[Array], Array],
 ) -> EvalState:
   """Performs one evaluation step, updating the given state."""
-  valid = jnp.logical_not(fake)
   rngs, next_rngs = utils.tree_rngs_split(state.rngs)
   logits, _ = apply_fn({'params': params}, images, rngs=rngs)
   loss = loss_fn(logits, labels)
   loss = valid * jnp.sum(loss, axis=tuple(range(1, loss.ndim)))
   correct = (valid[:, None] * labels *
              jax.nn.one_hot(label_pred_fn(logits), labels.shape[1]))
-  num_non_fake = jnp.sum(valid, dtype=jnp.float32)
-  return state.update(num_non_fake, correct, loss, next_rngs)
+  num_valid = jnp.sum(valid, dtype=jnp.float32)
+  return state.update(num_valid, correct, loss, next_rngs)
 
 
 def make_eval_step_pjit(
@@ -266,22 +264,8 @@ def make_eval_step_pjit(
           params_axis_resources,      # params
           input_axis_resources,       # images
           input_axis_resources,       # labels
-          input_axis_resources,       # fake
+          input_axis_resources,       # valid
       ),
       out_axis_resources=eval_state_axis_resources,
       donate_argnums=(0, 2, 3, 4))
   return eval_step_pjit
-
-
-@functools.lru_cache()
-def make_rngs(rng_keys: Tuple[str, ...], seed: int = 0) -> Dict[str, PRNGKey]:
-  """Creates a dictionary of PRNGKeys from a tuple of key names and a seed."""
-
-  @functools.partial(jax.jit, backend='cpu')
-  def _make_rngs():
-    if not rng_keys:
-      return dict()
-    rngs = jax.random.split(jax.random.PRNGKey(seed), len(rng_keys))
-    return dict(zip(rng_keys, rngs))
-
-  return _make_rngs()

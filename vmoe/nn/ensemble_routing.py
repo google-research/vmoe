@@ -1,4 +1,4 @@
-# Copyright 2021 Google LLC.
+# Copyright 2022 Google LLC.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -25,6 +25,7 @@ Throughout the file (and following vmoe.moe.py), we use the notation:
   M = number of ensemble members, also referred to as ensemble size.
   (we assume that E is a multiple of M).
   H = hidden size (a.k.a. number of dimensions of each token).
+  T = number of tokens per image.
 """
 import functools
 from typing import Mapping, Tuple
@@ -39,6 +40,29 @@ BaseDispatcher = routing.BaseDispatcher
 Metrics = Mapping[str, Array]
 
 
+def reshape_to_group_size_representation(x: Array, group_size: int,
+                                         ensemble_size: int) -> Array:
+  """Reshapes to keep the repeat-ensemble structure in each of the G groups."""
+  batch_size_with_repeat, num_tokens_per_image, hidden_size = x.shape
+  batch_size = batch_size_with_repeat // ensemble_size
+  # (B * M, T, H) -> (B, M, T, H) -> (B, T, M, H) -> (G, S, H).
+  x = x.reshape(batch_size, ensemble_size, num_tokens_per_image, hidden_size)
+  x = x.transpose(0, 2, 1, 3)
+  x = x.reshape(-1, group_size, hidden_size)
+  return x
+
+
+def reshape_from_group_size_representation(x: Array, num_tokens_per_image: int,
+                                           ensemble_size: int) -> Array:
+  """Reshapes to keep the repeat-ensemble structure at the image batch level."""
+  hidden_size = x.shape[2]
+  # (G, S, H) -> (B, T, M, H) -> (B, M, T, H) -> (B * M, T, H).
+  x = x.reshape(-1, num_tokens_per_image, ensemble_size, hidden_size)
+  x = x.transpose(0, 2, 1, 3)
+  x = x.reshape(-1, num_tokens_per_image, hidden_size)
+  return x
+
+
 def reshape_from_diag_blocks(diagonal_blocks: Array) -> Array:
   # Shape: from (G, M, S/M, E/M) to (G, S, E).
   return jax.vmap(lambda g: jax.scipy.linalg.block_diag(*g))(diagonal_blocks)
@@ -50,9 +74,9 @@ class NoisyTopExpertsPerItemEnsembleRouter(
 
   The logic closely follows that of routing.NoisyTopExpertsPerItemRouter. The
   main difference lies in two features:
-   (1) The batch of inputs is assumed to be tiled by a factor M, and
+   (1) The batch of inputs is assumed to be repeated by a factor M, and
    (2) the set of E experts is partitioned into M subsets of E/M experts. The
-   m-th part of the tiled inputs can only be routed in the m-th subset of the
+   m-th part of the repeated inputs can only be routed in the m-th subset of the
    expert partition (i.e., the resulting gating matrix is block diagonal).
   """
   ensemble_size: int = 1

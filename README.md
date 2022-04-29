@@ -42,10 +42,16 @@ We recommend using [gsutil](https://cloud.google.com/storage/docs/gsutil) to
 obtain the full list of files, download them, etc.
 
 - V-MoE S/32, 8 experts on the last two odd blocks, trained from scratch on
-  ILSVRC2012 with RandAugment: `gs://vmoe_checkpoints/vmoe_s32_last2_ilsvrc2012_randaug_medium`.
+  ILSVRC2012 with RandAugment for 300 epochs:
+  `gs://vmoe_checkpoints/vmoe_s32_last2_ilsvrc2012_randaug_light1`.
+  - Fine-tuned on ILSVRC2012 with a resolution of 384 pixels:
+    `gs://vmoe_checkpoints/vmoe_s32_last2_ilsvrc2012_randaug_light1_ft_ilsvrc2012`
+- V-MoE S/32, 8 experts on the last two odd blocks, trained from scratch on
+  ILSVRC2012 with RandAugment for 1000 epochs:
+  `gs://vmoe_checkpoints/vmoe_s32_last2_ilsvrc2012_randaug_medium`.
 - V-MoE B/16, 8 experts on every odd block, trained from scratch on ImageNet-21k
   with RandAugment: `gs://vmoe_checkpoints/vmoe_b16_imagenet21k_randaug_strong`.
-  - Fine-tuned on ILSVRC2012:
+  - Fine-tuned on ILSVRC2012 with a resolution of 384 pixels:
     `gs://vmoe_checkpoints/vmoe_b16_imagenet21k_randaug_strong_ft_ilsvrc2012`
 
 ## Disclaimers

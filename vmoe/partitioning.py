@@ -1,4 +1,4 @@
-# Copyright 2021 Google LLC.
+# Copyright 2022 Google LLC.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -334,7 +334,7 @@ def tree_global_shape(tree: PyTree, axis_resources: PyTree,
   """Returns a PyTree of ShapedArray leaves with the global shape of the arrays in the input tree."""
   tree_leaves, struct = jax.tree_flatten(tree)
   # pylint: disable=protected-access
-  _, axis_resources_leaves, struct2 = pjit._prepare_axis_resources(
+  _, axis_resources_leaves, struct2, _ = pjit._prepare_axis_resources(
       axis_resources, 'axis_resources')
   if struct != struct2:
     raise ValueError(f'The tree structs do not match.\n'

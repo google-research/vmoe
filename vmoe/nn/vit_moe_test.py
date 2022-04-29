@@ -1,4 +1,4 @@
-# Copyright 2021 Google LLC.
+# Copyright 2022 Google LLC.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -13,7 +13,11 @@
 # limitations under the License.
 
 """Tests for vit_moe."""
+import copy
+
 from absl.testing import absltest
+from absl.testing import parameterized
+import chex
 import jax
 from vmoe.nn import vit_moe
 
@@ -67,7 +71,7 @@ EXPECTED_DEFAULT_MOE_SHAPES = {
 EXPECTED_DEFAULT_LAYER_NORM_SHAPES = {'bias': (8,), 'scale': (8,)}
 
 
-class VitMoeTest(absltest.TestCase):
+class VitMoeTest(parameterized.TestCase):
 
   def test_initialize_shapes(self):
     """Tests that the shapes of the parameters are the expected ones."""
@@ -116,6 +120,30 @@ class VitMoeTest(absltest.TestCase):
     output, metrics = output
     self.assertIn('auxiliary_loss', metrics)
     self.assertTupleEqual(output.shape, (16, 4))
+
+  def test_forward_moe_dropout(self):
+    config = copy.deepcopy(DEFAULT_TEST_CONFIG)
+    config['encoder']['moe']['dropout_rate'] = 0.2
+    config['encoder']['moe']['split_rngs'] = ('dropout',)
+    model = vit_moe.VisionTransformerMoe(**config, deterministic=False)
+    rngs = dict(params=jax.random.PRNGKey(0),
+                gating=jax.random.PRNGKey(1),
+                dropout=jax.random.PRNGKey(2))
+    x = jax.random.normal(jax.random.PRNGKey(0), (16, 4, 4, 3))
+    variables = model.init(rngs, x)
+    variables = variables.unfreeze()
+    variables['params']['head']['kernel'] = jax.random.normal(
+        jax.random.PRNGKey(0), variables['params']['head']['kernel'].shape)
+    output1, _ = model.apply(
+        variables, x, rngs=dict(gating=jax.random.PRNGKey(1),
+                                dropout=jax.random.PRNGKey(2)))
+    output2, _ = model.apply(
+        variables, x, rngs=dict(gating=jax.random.PRNGKey(1),
+                                dropout=jax.random.PRNGKey(3)))
+    different_fn = lambda x, y: jax.numpy.abs(x - y).sum() > 0.01
+    error_msg_fn = lambda x, y: f'{x} is too close to {y}'
+    chex.assert_trees_all_equal_comparator(
+        different_fn, error_msg_fn, output1, output2)
 
 
 if __name__ == '__main__':

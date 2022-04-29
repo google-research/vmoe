@@ -1,4 +1,4 @@
-# Copyright 2021 Google LLC.
+# Copyright 2022 Google LLC.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -27,7 +27,8 @@ C = capacity.
 K = num_selected_experts. It must be <= num_experts.
 """
 import abc
-from typing import Any, Callable, Optional, Tuple
+import math
+from typing import Any, Callable, Dict, Mapping, Optional, Tuple
 
 import flax.core.lift
 import flax.linen.transforms
@@ -191,7 +192,9 @@ class Bfloat16Dispatcher(BaseDispatcher):
 
 def get_top_experts_per_item_dispatcher(gates: Array, name: str,
                                         num_selected_experts: int,
-                                        capacity: int, batch_priority: bool,
+                                        batch_priority: bool,
+                                        capacity: Optional[int] = None,
+                                        capacity_factor: Optional[float] = None,
                                         **dispatcher_kwargs) -> BaseDispatcher:
   """Returns a dispatcher implementing Top-Experts-Per-Item routing.
 
@@ -210,14 +213,30 @@ def get_top_experts_per_item_dispatcher(gates: Array, name: str,
       These values will also be used as combine_weights for the selected pairs.
     name: String with the type of dispatcher to use (supported values are
       "einsum" and "indices").
-    num_selected_experts: Maximum number of experts to select per each item.
-    capacity: Maximum number of items processed by each expert.
+    num_selected_experts: Maximum number of experts to select per each item (K).
     batch_priority: Whether to use batch priority routing or not.
+    capacity: If given, maximum number of items processed by each expert.
+      Either this or `capacity_factor` must be given.
+    capacity_factor: If given, sets the `capacity` to this factor of S * K / E.
+      Either this or `capacity` must be given.
     **dispatcher_kwargs: Additional arguments for the dispatcher object.
 
   Returns:
     A dispatcher.
   """
+  if (capacity is None) == (capacity_factor is None):
+    raise ValueError(
+        "You must specify either 'capacity' or 'capacity_factor', and not both."
+        f" Current values are capacity = {capacity!r}, "
+        f"capacity_factor = {capacity_factor!r}")
+  if not capacity:
+    group_size, num_experts = gates.shape
+    capacity = _compute_capacity(
+        # Target number of tokens to split among the `num_experts` experts.
+        num_tokens=group_size * num_selected_experts,
+        num_experts=num_experts,
+        capacity_factor=capacity_factor)
+
   fn_map = {
       "einsum": _get_top_experts_per_item_einsum_dispatcher,
       "indices": _get_top_experts_per_item_expert_indices_dispatcher,
@@ -229,7 +248,7 @@ def get_top_experts_per_item_dispatcher(gates: Array, name: str,
 
 
 def sparse_moe_spmd(target: flax.linen.transforms.Target,
-                    split_rngs: bool = False,
+                    split_rngs: Mapping[str, bool],
                     has_aux: bool = False,
                     methods=None):
   """Lift transformation that wraps a target with a Sparse MoE using SPMD.
@@ -245,16 +264,14 @@ def sparse_moe_spmd(target: flax.linen.transforms.Target,
   to different sets of parameters and inputs. Finally, the "dispatcher" combines
   the outputs of all experts applied to each given item.
 
-  By default, all experts will be initialized using the same parameters. If you
-  want to initialize each expert differently, use "split_rngs = True".
-
   If the target has any auxiliary outputs (e.g. metrics) that should not be
   combined, these can be returned by using "has_aux = True".
 
   Args:
     target: A target to wrap with a Sparse MoE (e.g. a flax.linen.Module) with
       methods passed via the `methods` argument.
-    split_rngs: If True, splits the RNGs passed to each expert.
+    split_rngs: Mapping indicating whether to split each of the PRNGKeys passed
+      to the experts.
     has_aux: If the target returns any auxiliary output that should not be
       combined, set this to True.
     methods: Methods from the target to wrap with a Sparse MoE. By default,
@@ -275,8 +292,8 @@ def sparse_moe_spmd(target: flax.linen.transforms.Target,
           expert_fn,
           in_axes=0,
           out_axes=0,
-          variable_axes={"params": 0},
-          split_rngs={"params": split_rngs})(scopes, *inputs)
+          variable_axes={"params": 0, "intermediates": 0},
+          split_rngs=split_rngs)(scopes, *inputs)
       # Combine outputs.
       if has_aux:
         outputs, aux = outputs
@@ -292,6 +309,18 @@ def _cast_to_bfloat16(x: Array) -> Array:
   return x.astype(jnp.bfloat16) if jnp.issubdtype(x.dtype, jnp.floating) else x
 
 
+def _compute_capacity(num_tokens, num_experts, capacity_factor):
+  capacity = int(math.ceil(num_tokens * capacity_factor / num_experts))
+  if capacity < 1:
+    raise ValueError(f"The values num_tokens = f{num_tokens}, num_experts = "
+                     f"{num_experts} and capacity_factor = {capacity_factor} "
+                     f"lead to capacity = {capacity}, but it must be greater "
+                     "than or equal to 1.")
+  # Make capacity multiple of 4 to try to avoid padding.
+  capacity += (-capacity) % 4
+  return capacity
+
+
 def _convert_partition_spec(spec):
   if spec is not None and not isinstance(spec, PartitionSpec):
     spec = (spec,) if isinstance(spec, str) else tuple(spec)
@@ -304,8 +333,7 @@ def _dispatch(data: Array, partition_spec: Optional[PartitionSpec]) -> Array:
   partition_spec = _convert_partition_spec(partition_spec)
   num_groups, num_experts, capacity, *item_shape = data.shape
   data = with_sharding_constraint(data, partition_spec)
-  data = data.reshape(num_experts, num_groups // num_experts, num_experts,
-                      capacity, *item_shape)
+  data = data.reshape(num_experts, -1, num_experts, capacity, *item_shape)
   data = jnp.swapaxes(data, 0, 2)
   data = data.reshape(-1, *item_shape)
   data = with_sharding_constraint(data, partition_spec)
@@ -320,8 +348,7 @@ def _receive(data: Array, num_groups: int,
   capacity = num_groups_time_capacity // num_groups
   data = data.reshape(num_experts * num_groups, capacity, *item_shape)
   data = with_sharding_constraint(data, partition_spec)
-  data = data.reshape(num_experts, num_groups // num_experts, num_experts,
-                      capacity, *item_shape)
+  data = data.reshape(num_experts, -1, num_experts, capacity, *item_shape)
   data = jnp.swapaxes(data, 0, 2)
   data = data.reshape(num_groups, num_experts, capacity, *item_shape)
   data = with_sharding_constraint(data, partition_spec)
@@ -459,3 +486,5 @@ def _get_top_experts_per_item_expert_indices_dispatcher(
       num_experts=num_experts,
       capacity=capacity,
       **dispatcher_kwargs)
+
+

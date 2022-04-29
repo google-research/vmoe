@@ -1,4 +1,4 @@
-# Copyright 2021 Google LLC.
+# Copyright 2022 Google LLC.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -30,6 +30,7 @@ import tensorflow_datasets as tfds
 import vmoe.data.pp_ops
 
 DEFAULT_SHUFFLE_BUFFER = 50_000
+VALID_KEY = '__valid__'
 Data = Dict[str, Any]
 
 
@@ -66,6 +67,7 @@ def get_data_from_tfds(*,
                        cache: Optional[str] = None,
                        data_dir: Optional[str] = None,
                        manual_dir: Optional[str] = None,
+                       num_parallel_calls: int = 128,
                        prefetch: Optional[Union[int, str]] = None,
                        shuffle_buffer: int = DEFAULT_SHUFFLE_BUFFER,
                        shuffle_seed: Optional[int] = None,
@@ -87,6 +89,7 @@ def get_data_from_tfds(*,
     manual_dir: Optional directory where the raw data is stored. This is
       necessary to prepare some datasets (e.g. 'imagenet2012'), since TFDS does
       not suppport downloading them directly.
+    num_parallel_calls: Process this number of examples in parallel.
     prefetch: If given, prefetches this number of batches.
     shuffle_buffer: Size of the shuffle buffer. Only used for training.
     shuffle_seed: Optional seed for shuffling files and examples.
@@ -102,7 +105,15 @@ def get_data_from_tfds(*,
       'Process %d / %d will handle examples from %d to %d, from split %r of dataset %r.',
       jax.process_index(), jax.process_count(), start, end, split_name, name)
   data_range = tfds.core.ReadInstruction(split_name, start, end)
-  read_config = tfds.ReadConfig(shuffle_seed=shuffle_seed)
+  read_config = tfds.ReadConfig(
+      shuffle_seed=shuffle_seed, skip_prefetch=True, try_autocache=False)
+  # Compute the batch size per process.
+  if (batch_size % jax.process_count() or batch_size % jax.device_count()):
+    raise ValueError(f'batch_size must divide the process and device count, '
+                     f'but got {batch_size}, {jax.process_count()}, '
+                     f'and {jax.device_count()} respectively.')
+  batch_size_per_process = batch_size // jax.process_count()
+  # Get dataset from TFDS as a tf.data.Dataset.
   data = data_builder.as_dataset(
       split=data_range,
       decoders={'image': tfds.decode.SkipDecoding()},
@@ -111,35 +122,35 @@ def get_data_from_tfds(*,
   # Optionally, cache loaded data.
   if cache == 'loaded':
     data = data.cache()
-  # Compute the batch size per process.
-  if (batch_size % jax.process_count() or batch_size % jax.device_count()):
-    raise ValueError(f'batch_size must divide the process and device count, '
-                     f'but got {batch_size}, {jax.process_count()}, '
-                     f'and {jax.device_count()} respectively.')
-  batch_size_per_process = batch_size // jax.process_count()
   if variant == 'train':
     # Repeat training data forever.
     data = data.repeat()
     # Shuffle training data.
     data = data.shuffle(shuffle_buffer, seed=shuffle_seed)
+    # Process
+    process_fn = get_data_process_fn(process)
+  else:
+    # Other variants process each example only once and include VALID_KEY to
+    # differentiate real vs. fake examples (that are added later).
+    process_fn = _compose_fns(get_data_process_fn(process),
+                              lambda x: {**x, VALID_KEY: True})
   # Process data.
   data = data.map(
-      map_func=get_data_process_fn(process),
-      num_parallel_calls=tf.data.experimental.AUTOTUNE,
+      map_func=process_fn,
+      num_parallel_calls=num_parallel_calls,
       deterministic=False)
   if variant != 'train':
-    # Other variants process each example only once.
     # All processes must iterate over the same number of examples, thus
     # processes with a smaller range need one extra padded example. After that,
     # the number of examples iterated has to be multiple of
     # batch_size_per_process, thus we add the extra fake examples if necessary.
     num_fake_examples = int(smaller_range)
     num_fake_examples += -(end - start + smaller_range) % batch_size_per_process
-    add_fake_fn = lambda fake: (lambda x: {**x, '_fake': fake})
-    data = data.map(add_fake_fn(False),
-                    num_parallel_calls=tf.data.experimental.AUTOTUNE)
     if num_fake_examples > 0:
-      fake_data = data.take(1).map(add_fake_fn(True)).repeat(num_fake_examples)
+      fake_elem = tf.nest.map_structure(
+          lambda spec: tf.zeros(spec.shape, spec.dtype), data.element_spec)
+      fake_data = tf.data.Dataset.from_tensors(fake_elem)
+      fake_data = fake_data.repeat(num_fake_examples).cache()
       data = data.concatenate(fake_data)
   # Batch data.
   data = data.batch(batch_size_per_process, drop_remainder=True)
@@ -190,14 +201,7 @@ def get_data_process_fn(process_str: str) -> Callable[[Data], Data]:
     op_fn = getattr(vmoe.data.pp_ops, op_name)(*op_args, **op_kwargs)
     ops.append(op_fn)
 
-  def _process_fn(data: Data):
-    if not isinstance(data, dict):
-      raise TypeError(f'Argument `data` must be a dict, not {type(data)}')
-    for op_fn in ops:
-      data = op_fn(data)
-    return data
-
-  return _process_fn
+  return _compose_fns(*ops)
 
 
 def get_data_range(builder, split: str, process_id: int, process_count: int):
@@ -300,3 +304,15 @@ def _parse_process_op_str(string_to_parse):
   func_args, func_kwargs = _get_func_args_and_kwargs(expr)
 
   return func_name, func_args, func_kwargs
+
+
+def _compose_fns(*fns):
+
+  def fn(data: Data):
+    if not isinstance(data, dict):
+      raise TypeError(f'Argument `data` must be a dict, not {type(data)}')
+    for f in fns:
+      data = f(data)
+    return data
+
+  return fn

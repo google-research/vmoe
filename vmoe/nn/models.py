@@ -1,4 +1,4 @@
-# Copyright 2021 Google LLC.
+# Copyright 2022 Google LLC.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -17,3 +17,4 @@
 from vmoe.nn.external import MlpMixer
 from vmoe.nn.external import VisionTransformer
 from vmoe.nn.vit_moe import VisionTransformerMoe
+from vmoe.nn.vit_moe_ensemble import VisionTransformerMoeEnsemble

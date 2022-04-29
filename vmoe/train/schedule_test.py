@@ -1,4 +1,4 @@
-# Copyright 2021 Google LLC.
+# Copyright 2022 Google LLC.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -76,7 +76,7 @@ class ScheduleTest(parameterized.TestCase):
         warmup_steps=5,
         decay_steps=10)
     chex.assert_trees_all_close(
-        np.asarray(list(map(fn, range(15))), dtype=np.float32),
+        np.fromiter(map(fn, range(15)), dtype=np.float32),
         np.asarray([
             # Linear warmup
             0.0,
@@ -96,6 +96,34 @@ class ScheduleTest(parameterized.TestCase):
             0.01,
             0.01,
             0.01,
+        ], dtype=np.float32),
+        rtol=1e-5)
+
+  def test_big_vision_rsqrt_schedule(self):
+    fn = schedule.big_vision_rsqrt_schedule(
+        peak_value=0.1,
+        decay_steps=12,
+        warmup_steps=4,
+        cooldown_steps=3,
+        timescale=2)
+    chex.assert_trees_all_close(
+        np.fromiter(map(fn, range(12)), dtype=np.float32),
+        np.asarray([
+            # Linear warmup.
+            0.0,
+            0.1 * 1 / 4,
+            0.1 * 2 / 4,
+            0.1 * 3 / 4,
+            0.1,
+            # Inverse sqrt decay.
+            0.1 / np.sqrt(1 + 1 / 2),
+            0.1 / np.sqrt(1 + 2 / 2),
+            0.1 / np.sqrt(1 + 3 / 2),
+            0.1 / np.sqrt(1 + 4 / 2),
+            # Linear cooldown.
+            0.1 / np.sqrt(1 + 5 / 2) * (1 - 0 / 3),
+            0.1 / np.sqrt(1 + 5 / 2) * (1 - 1 / 3),
+            0.1 / np.sqrt(1 + 5 / 2) * (1 - 2 / 3),
         ], dtype=np.float32),
         rtol=1e-5)
 

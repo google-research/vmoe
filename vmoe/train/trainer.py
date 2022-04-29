@@ -1,4 +1,4 @@
-# Copyright 2021 Google LLC.
+# Copyright 2022 Google LLC.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -44,6 +44,7 @@ from vmoe.data import input_pipeline
 from vmoe.data import pjit_utils
 from vmoe.evaluate import ensemble
 from vmoe.evaluate import evaluator
+from vmoe.evaluate import fewshot
 from vmoe.nn import models
 from vmoe.train import initialization
 from vmoe.train import optimizer
@@ -66,6 +67,7 @@ ThreadPool = multiprocessing.pool.ThreadPool
 TrainState = train_state_module.TrainState
 TrainStateAxisResources = train_state_module.TrainStateAxisResources
 TrainStateInitFromScratchFn = Callable[[Mapping[str, PRNGKey]], TrainState]
+TrainStepFn = Callable[..., Tuple[TrainState, Mapping[str, Any]]]
 UnparsedPartitionSpec = Union[str, Tuple[Union[str, Tuple[str, ...]], ...]]
 
 
@@ -88,20 +90,29 @@ def create_checkpoint_hook(*, workdir: str, progress_hook: ReportProgress,
       **kwargs)
 
 
-def create_evaluation_hook(*, writer: metric_writers.MetricWriter,
-                           progress_hook: ReportProgress,
-                           datasets: Mapping[str, Dataset],
-                           apply_fn: Callable[..., Any],
-                           loss_fn: Callable[[Array, Array], Array],
-                           params_axis_resources: PyTree,
-                           input_axis_resources: PartitionSpec, first_step: int,
-                           train_steps: int, extra_rng_keys: Sequence[str],
-                           **kwargs) -> evaluator.EvaluateMultipleDatasets:
+def create_evaluation_hook(
+    *,
+    base_model_config: ml_collections.ConfigDict,
+    writer: metric_writers.MetricWriter,
+    progress_hook: ReportProgress,
+    datasets: Mapping[str, Dataset],
+    loss_fn: Callable[[Array, Array], Array],
+    params_axis_resources: PyTree,
+    input_axis_resources: PartitionSpec,
+    first_step: int,
+    train_steps: int,
+    extra_rng_keys: Sequence[str],
+    model_overrides: Optional[ml_collections.ConfigDict] = None,
+    **kwargs,
+) -> Tuple[evaluator.EvaluateMultipleDatasets, ml_collections.ConfigDict]:
   """Returns a hook to evaluate a model periodically."""
+  model_config = override_base_config(base_model_config, model_overrides)
+  apply_fn = create_flax_model(
+      config=model_config.to_dict(), deterministic=True).apply
   on_steps = set(kwargs.pop('on_steps', []))
   # Always evaluate on the first and last step.
   on_steps.update([first_step, train_steps])
-  return evaluator.EvaluateMultipleDatasets(
+  periodic_action = evaluator.EvaluateMultipleDatasets(
       apply_fn=apply_fn,
       loss_fn=loss_fn,
       params_axis_resources=params_axis_resources,
@@ -113,6 +124,43 @@ def create_evaluation_hook(*, writer: metric_writers.MetricWriter,
       report_progress_name='eval',
       on_steps=on_steps,
       **kwargs)
+  return periodic_action, model_config
+
+
+def create_fewshot_hook(
+    *,
+    base_model_config: ml_collections.ConfigDict,
+    writer: metric_writers.MetricWriter,
+    progress_hook: ReportProgress,
+    variables_axis_resources: PyTree,
+    input_axis_resources: PartitionSpec,
+    first_step: int,
+    train_steps: int,
+    extra_rng_keys: Sequence[str],
+    model_overrides: Optional[ml_collections.ConfigDict] = None,
+    **kwargs) -> Tuple[Callable[..., Any], ml_collections.ConfigDict]:
+  """Returns a hook to run fewshot evaluation of a model periodically."""
+  model_config = override_base_config(base_model_config, model_overrides)
+  # Few-shot eval requires additional mandatory parameters. If none of those is
+  # given, we assume that no few-shot eval should be done.
+  if not kwargs:
+    return (lambda *args, **kw: None, model_config)
+  apply_fn = create_flax_model(
+      config=model_config.to_dict(), deterministic=True).apply
+  on_steps = set(kwargs.pop('on_steps', []))
+  # Always evaluate on the first and last step.
+  on_steps.update([first_step, train_steps])
+  periodic_action = fewshot.FewShotPeriodicAction(
+      metric_writer=writer,
+      apply_fn=apply_fn,
+      variables_axis_resources=variables_axis_resources,
+      input_axis_resources=input_axis_resources,
+      rng_keys=extra_rng_keys,
+      report_progress=progress_hook,
+      report_progress_name='fewshot',
+      on_steps=on_steps,
+      **kwargs)
+  return periodic_action, model_config
 
 
 def create_flax_model(*, config: Dict[str, Any],
@@ -165,7 +213,7 @@ def create_train_state(
     A TrainState.
   """
   mesh = mesh or maps.thread_resources.env.physical_mesh
-  with maps.mesh(mesh.devices, mesh.axis_names):
+  with maps.Mesh(mesh.devices, mesh.axis_names):
     train_state = pjit.pjit(
         initialize_fn,
         in_axis_resources=(None,),
@@ -245,7 +293,7 @@ def restore_or_create_train_state(
         mesh=mesh,
         thread_pool=thread_pool)
     # Copy TrainState to device memory, and return.
-    with maps.mesh(mesh.devices, mesh.axis_names):
+    with maps.Mesh(mesh.devices, mesh.axis_names):
       return pjit.pjit(
           fun=lambda x: x,
           in_axis_resources=(axis_resources,),
@@ -259,34 +307,39 @@ def restore_or_create_train_state(
 
 def get_loss_fn(name: str, **kwargs):
   """Returns the train/evaluation losses and the way to predict labels."""
-  softmax_xent = optimizer.optax.softmax_cross_entropy
-  sigmoid_xent = optimizer.optax.sigmoid_binary_cross_entropy
-  default_label_pred_fn = lambda logits: jnp.argmax(logits, -1)
+  def default_sigmoid_xent(logits, labels, **kw):
+    return jnp.sum(
+        optimizer.optax.sigmoid_binary_cross_entropy(logits, labels, **kw),
+        axis=-1)
 
-  if name == 'softmax_xent':
-    train_loss_fn = functools.partial(softmax_xent, **kwargs)
-    eval_loss_fn = train_loss_fn
-    return train_loss_fn, eval_loss_fn, default_label_pred_fn
-  elif name == 'sigmoid_xent':
-    # The sum with axis -1 is to sum the binary cross entropy over all classes.
-    def train_loss_fn(logits, labels):
-      return jnp.sum(sigmoid_xent(logits, labels, **kwargs), axis=-1)
-    eval_loss_fn = train_loss_fn
-    return train_loss_fn, eval_loss_fn, default_label_pred_fn
-  elif name == 'ensemble_softmax_xent':
-    # In the case of the ensemble softmax cross-entropy, the training loss and
-    # the eval loss functions differ (see the discussion in Appendix D.1 of
-    # https://arxiv.org/pdf/2110.03360.pdf).
-    if 'ensemble_size' not in kwargs:
-      raise ValueError(('The ensemble softmax CE needs the key ensemble_size: '
-                        f'received {kwargs!r}.'))
-    ensemble_size = kwargs.pop('ensemble_size')
-    train_loss_fn = functools.partial(softmax_xent, **kwargs)
-    eval_loss_fn = functools.partial(ensemble.ensemble_softmax_xent,
-                                     ensemble_size=ensemble_size)
-    label_pred_fn = functools.partial(ensemble.label_pred_ensemble_softmax,
-                                      ensemble_size=ensemble_size)
-    return train_loss_fn, eval_loss_fn, label_pred_fn
+  default_label_pred_fn = lambda logits: jnp.argmax(logits, -1)
+  loss_fns = {
+      'softmax_xent': (
+          optimizer.optax.softmax_cross_entropy,
+          optimizer.optax.softmax_cross_entropy,
+          default_label_pred_fn),
+      'sigmoid_xent':
+          (default_sigmoid_xent, default_sigmoid_xent, default_label_pred_fn),
+      # In the case of the ensemble cross-entropy, the training loss and the
+      # eval loss functions differ (see the discussion in Appendix D.1 of
+      # https://arxiv.org/pdf/2110.03360.pdf).
+      'ensemble_softmax_xent': (
+          ensemble.ensemble_softmax_xent_train,
+          ensemble.ensemble_softmax_xent_eval,
+          ensemble.label_pred_ensemble_softmax),
+      'ensemble_sigmoid_xent': (
+          ensemble.ensemble_sigmoid_xent_train,
+          ensemble.ensemble_sigmoid_xent_eval,
+          ensemble.label_pred_ensemble_sigmoid),
+  }
+  if name in loss_fns:
+    train_loss_fn, eval_loss_fn, pred_fn = loss_fns[name]
+    train_loss_fn = functools.partial(train_loss_fn, **kwargs)
+    eval_loss_fn = functools.partial(eval_loss_fn, **kwargs)
+    if name.startswith('ensemble_'):
+      # Pass ensemble_size to the pred_fn.
+      pred_fn = functools.partial(pred_fn, **kwargs)
+    return train_loss_fn, eval_loss_fn, pred_fn
   else:
     raise ValueError(f'Unknown loss: {name!r}')
 
@@ -353,6 +406,98 @@ def initialize_train_state_from_checkpoint(
     raise ValueError(f'Unknown initialization method: {name!r}')
 
 
+def mixup(
+    rng: PRNGKey,
+    tree: PyTree,
+    *,
+    concentration: float,
+    shape: Tuple[int, ...] = (1, 2),
+    roll_axis: int = 0,
+    partition_spec: Optional[PartitionSpec] = None,
+) -> Tuple[PRNGKey, PyTree]:
+  """Performs mixup on each array of the given tree.
+
+  For details on mixup, check "mixup: Beyond Empirical Risk Minimization"
+  (https://arxiv.org/abs/1710.09412).
+
+  The same mixing weights are used for all leaves of the tree, which is
+  convenient to mix several arrays in the same way (e.g. images and labels).
+
+  Args:
+    rng: PRNGKey used to generate the mixup weights.
+    tree: Tree with array leaves. The size of the first dimension of all trees
+      must be equal, i.e. the batch_size.
+    concentration: Dirichlet concentration parameter, used to sample the
+      mixing weights. Must be a positive float.
+    shape: Shape of the samples from the Dirichlet distribution.
+    roll_axis: Axis to roll to mix examples. This is typically the 'batch'
+      axis from your input arrays. It must be [0, len(shape) - 1).
+    partition_spec: Optional PartitionSpec used to annotate the sampled values
+      from the Dirichlet distribution.
+
+  Returns:
+    A tree with the mixed arrays.
+  """
+  arrays, treedef = jax.tree_flatten(tree)
+  if len(shape) < 2:
+    raise ValueError(f"Mixup 'shape' has length {len(shape)}, but it must have "
+                     'length >= 2.')
+  # Check that all arrays have the same batch size.
+  batch_ndim = len(shape) - 1
+  for i, x in enumerate(arrays):
+    try:
+      _ = jnp.broadcast_shapes(x.shape[:batch_ndim], shape[:-1])
+    except ValueError:
+      raise ValueError(f'Mixup with inconsistent shapes. The shape of the '
+                       f'{i}-th array is {x.shape}, but the first {batch_ndim} '
+                       f'dims must be broadcastable to {shape[:-1]}') from None
+    if x.shape[:batch_ndim] != arrays[0].shape[:batch_ndim]:
+      raise ValueError(f'Mixup with inconsistent shapes. The shape of the '
+                       f'{i}-th array is {x.shape}, but the first {batch_ndim} '
+                       f'dims must be equal to {arrays[0].shape[:batch_ndim]}')
+  if not 0 <= roll_axis < batch_ndim:
+    raise ValueError("Mixup 'roll_axis' must be an integer in "
+                     f'[0, {batch_ndim}), but got roll_axis = {roll_axis}')
+  # Check mixup parameters.
+  if concentration <= 0.:
+    raise ValueError(f"Mixup 'concentration' must be greater than 0, but got "
+                     f'concentration = {concentration}')
+  # Generate alphas (weights) for the mixup.
+  concentration = jnp.full(shape, concentration)
+  concentration = partitioning.with_sharding_constraint(
+      concentration, partition_spec)
+  alpha = jax.random.dirichlet(rng, concentration)
+  alpha = partitioning.with_sharding_constraint(alpha, partition_spec)
+  # Put the largest weight of each example in the first position of alpha.
+  # This avoids destroying examples due to permuations of the weights.
+  # If one samples an alpha for every example, then chances are that many of
+  # the original examples are lost (with mixup_size = 2).
+  # Suppose that we have concentration approaching 0, and mixup_size = 2.
+  # Then each alpha (Dirichlet sample) will be either (1, 0) or (0, 1).
+  # If the batch is [1, 2], with alpha [(1, 0), (0, 1)], then the output will
+  # be [1, 1]. If the sampled alpha is [(0, 1), (1, 0)], the output is [2, 2].
+  alpha = -jnp.sort(-alpha, axis=-1)
+  # Reshape alphas to (mixup_size, batch_size, ...) for convenience.
+  alpha = jnp.moveaxis(alpha, -1, 0)
+  # Mix each sample with the next `mixup_size` samples within the same group.
+  def mix(x):
+    a = alpha.reshape(alpha.shape + (1,) * (x.ndim - batch_ndim))
+    return sum(a[i] * jnp.roll(x, -i, axis=roll_axis) for i in range(shape[-1]))
+  arrays = list(map(mix, arrays))
+  return jax.tree_unflatten(treedef, arrays)
+
+
+def override_base_config(
+    base: ml_collections.ConfigDict,
+    override: Optional[ml_collections.ConfigDict],
+) -> ml_collections.ConfigDict:
+  output = base.copy_and_resolve_references()
+  with output.unlocked():
+    if override:
+      output.update(override)
+  return output
+
+
 def parse_partition_spec(spec) -> PartitionSpec:
   if isinstance(spec, PartitionSpec):
     return spec
@@ -386,6 +531,16 @@ def train_step(
 
 
 def train_and_evaluate(config: ml_collections.ConfigDict, workdir: str):
+  # Set logical device mesh globally.
+  mesh = partitioning.get_auto_logical_mesh(config.num_expert_partitions,
+                                            jax.devices())
+  partitioning.log_logical_mesh(mesh)
+  with mesh:
+    return _train_and_evaluate(config, workdir, mesh)
+
+
+def _train_and_evaluate(config: ml_collections.ConfigDict, workdir: str,
+                        mesh: Mesh):
   """Trains a model and evaluates it periodically."""
   datasets = input_pipeline.get_datasets(config.dataset)
   if 'train' not in datasets:
@@ -403,12 +558,6 @@ def train_and_evaluate(config: ml_collections.ConfigDict, workdir: str):
       'batch size of %d', train_steps, train_epochs, train_examples,
       train_batch_size)
 
-  # Set logical device mesh globally.
-  mesh = partitioning.get_auto_logical_mesh(config.num_expert_partitions,
-                                            jax.devices())
-  partitioning.log_logical_mesh(mesh)
-  maps.thread_resources.env = maps.thread_resources.env.with_mesh(mesh)
-
   # Get the global shape of the image array.
   train_image_shape = datasets['train'].element_spec['image'].shape
   train_image_shape = (train_batch_size,) + train_image_shape[1:]
@@ -424,7 +573,7 @@ def train_and_evaluate(config: ml_collections.ConfigDict, workdir: str):
       input_shape=train_image_shape,
       input_axis_resources=input_axis_resources,
       train_steps=train_steps)
-  train_state_rngs = evaluator.make_rngs(
+  train_state_rngs = utils.make_rngs(
       ('params',) + tuple(config.get('extra_rng_keys', [])),
       config.get('seed', 0))
   train_state_axis_resources = tree_axis_resources_from_regexes(
@@ -444,8 +593,15 @@ def train_and_evaluate(config: ml_collections.ConfigDict, workdir: str):
         **config.initialization)
 
   train_loss_fn, eval_loss_fn, label_pred_fn = get_loss_fn(**config.loss)
+  train_step_fn = functools.partial(train_step, loss_fn=train_loss_fn)
+  # If mixup options are defined, wrap the train_step_fn with mixup.
+  if config.get('mixup', {}):
+    mixup_config = config.mixup.to_dict()
+    train_step_fn = wrap_train_step_with_mixup(
+        train_step_fn, partition_spec=input_axis_resources, **mixup_config)
+
   train_step_pjit = pjit.pjit(
-      fun=functools.partial(train_step, loss_fn=train_loss_fn),
+      fun=train_step_fn,
       in_axis_resources=(
           train_state_axis_resources,  # train_state
           input_axis_resources,        # images
@@ -469,11 +625,11 @@ def train_and_evaluate(config: ml_collections.ConfigDict, workdir: str):
       workdir=workdir, progress_hook=progress_hook,
       train_state_axis_resources=train_state_axis_resources,
       train_steps=train_steps, **config.get('save_checkpoint', {}))
-  evaluation_hook = create_evaluation_hook(
+  evaluation_hook, config_model_eval = create_evaluation_hook(
+      base_model_config=config.model.copy_and_resolve_references(),
       writer=writer,
       progress_hook=progress_hook,
       datasets={name: ds for name, ds in datasets.items() if name != 'train'},
-      apply_fn=create_flax_model(config=config.model, deterministic=True).apply,
       loss_fn=eval_loss_fn,
       label_pred_fn=label_pred_fn,
       params_axis_resources=train_state_axis_resources.params,
@@ -482,6 +638,16 @@ def train_and_evaluate(config: ml_collections.ConfigDict, workdir: str):
       train_steps=train_steps,
       extra_rng_keys=config.get('extra_rng_keys', []),
       **config.get('evaluate', {}))
+  fewshot_hook, _ = create_fewshot_hook(
+      base_model_config=config_model_eval,
+      writer=writer,
+      progress_hook=progress_hook,
+      variables_axis_resources={'params': train_state_axis_resources.params},
+      input_axis_resources=input_axis_resources,
+      first_step=init_step + 1,
+      train_steps=train_steps,
+      extra_rng_keys=config.get('extra_rng_keys', []),
+      **config.get('fewshot', {}))
   with metric_writers.ensure_flushes(writer):
     # Explicitly compile train_step here and report the compilation time.
     t0 = time.time()
@@ -502,9 +668,11 @@ def train_and_evaluate(config: ml_collections.ConfigDict, workdir: str):
       with jax.profiler.StepTraceAnnotation('train', step_num=step):
         train_state, metrics = train_step_pjit(train_state, batch['image'],
                                                batch['labels'])
-      progress_hook(step, scalar_metrics=metrics)
+      progress_hook(
+          step, scalar_metrics={f'train/{k}': v for k, v in metrics.items()})
       checkpoint_hook(step, state=train_state)
       evaluation_hook(step, params=train_state.params)
+      fewshot_hook(step, variables={'params': train_state.params})
   # Write a checkpoint containing only the params, with no TrainState, to use
   # for fine-tuning or releasing it.
   logging.info('Saving checkpoint ready for releasing and fine-tuning.')
@@ -581,3 +749,85 @@ def tree_axis_resources_from_regexes(
   axis_resources = flax.traverse_util.unflatten_dict(axis_resources)
   axis_resources = flax.serialization.from_state_dict(tree, axis_resources)
   return axis_resources
+
+
+def wrap_train_step_with_mixup(
+    train_step_fn: TrainStepFn,
+    *,
+    concentration: Optional[float] = None,
+    granularity: str = 'device',
+    size: int = 2,
+    partition_spec: Optional[PartitionSpec] = None,
+) -> TrainStepFn:
+  """Wraps a train step function with mixup.
+
+  Args:
+    train_step_fn: Training step function to wrap.
+    concentration: Dirichlet concentration parameter, used to sample the
+      mixing weights. Must be a positive float.
+    granularity: Granularity of the mixing weights. 'batch' samples a single set
+      of weights for all the examples in the batch, 'device' samples a set of
+      weights for all the examples in each device, and 'example' samples weights
+      for each example independently.
+    size: Number of original examples used in each new mixed example.
+    partition_spec: Optional PartitionSpec used to annotate the sampled values
+      from the Dirichlet distribution. Only used if granularity is 'example'.
+
+  Returns:
+    A new train_step_fn that does mixup before calling the original one.
+  """
+  if concentration is None or concentration == 0.:
+    return train_step_fn
+
+  if granularity == 'batch':
+    partition_spec = None
+
+  if granularity == 'example':
+    logging.warning(
+        "You are using granularity = 'example'. This is extremely inneficient "
+        'since the current implementation of jax.random.gamma does not work '
+        "with pjit's sharding. Use granularity = 'device' meanwhile.")
+
+  def new_train_step_fn(
+      state: TrainState,
+      images: Array,
+      labels: Array,
+      *args,
+      **kwargs,
+  ) -> Tuple[TrainState, Mapping[str, Any]]:
+    if 'mixup' not in state.rngs:
+      raise ValueError(f'Mixup requires a PRNGKey with the name "mixup", but '
+                       f'only these were given: {sorted(state.rngs.keys())}')
+    frozen_rngs = isinstance(state.rngs, flax.core.FrozenDict)
+    rngs = flax.core.unfreeze(state.rngs) if frozen_rngs else state.rngs
+    # Apply mixup on images and labels.
+    mixup_rng = rngs.pop('mixup')
+    mixup_rng, next_mixup_rng = jax.random.split(mixup_rng)
+    # Reshape images and labels to perform mixup on each device independently,
+    # to avoid communication among devices due to mixup's jnp.roll().
+    images = images.reshape((jax.device_count(), -1) + images.shape[1:])
+    labels = labels.reshape((jax.device_count(), -1) + labels.shape[1:])
+    if granularity == 'batch':
+      mixup_shape = (1, 1, size)
+    elif granularity == 'device':
+      mixup_shape = (images.shape[0], 1, size)
+    elif granularity == 'example':
+      mixup_shape = (*images.shape[:2], size)
+    else:
+      raise ValueError(f'Unknown granularity: {granularity!r}')
+    (images, labels) = mixup(
+        rng=mixup_rng, tree=(images, labels), concentration=concentration,
+        shape=mixup_shape, roll_axis=1, partition_spec=partition_spec)
+    images = images.reshape((-1,) + images.shape[2:])
+    labels = labels.reshape((-1,) + labels.shape[2:])
+    # Call the given `train_step_fn` passing the state without mixup rngs, and
+    # the modified images and labels.
+    state = state.replace(rngs=flax.core.freeze(rngs) if frozen_rngs else rngs)
+    state, metrics = train_step_fn(state, images, labels, *args, **kwargs)
+    # Add the mixup PRNGKey back to the state.
+    rngs = flax.core.unfreeze(state.rngs) if frozen_rngs else state.rngs
+    rngs['mixup'] = next_mixup_rng
+    state = state.replace(rngs=flax.core.freeze(rngs) if frozen_rngs else rngs)
+    return state, metrics
+
+  return new_train_step_fn
