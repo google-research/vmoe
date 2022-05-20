@@ -325,6 +325,36 @@ class PartitioningTest(parameterized.TestCase):
       partitioning.tree_global_shape({'a': 1}, {'a': PartitionSpec()}, mesh)
 
 
+class ParsePartitionSpecTest(parameterized.TestCase):
+
+  @parameterized.named_parameters(
+      ('_none', None, PartitionSpec()),
+      ('_string', 'a', PartitionSpec('a')),
+      ('_tuple', ('a', ('b', 'c')), PartitionSpec('a', ('b', 'c'))),
+      ('_partition_spec', PartitionSpec('a'), PartitionSpec('a')),
+  )
+  def test(self, spec, expected):
+    self.assertEqual(partitioning.parse_partition_spec(spec), expected)
+
+
+class TreeAxisResourcesFromRegexesTest(parameterized.TestCase):
+
+  @parameterized.named_parameters(
+      ('_empty_regexes', {'a': 1, 'b': 2, 'c': 3}, [],
+       {'a': PartitionSpec(), 'b': PartitionSpec(), 'c': PartitionSpec()}),
+      ('_single_string', {'a': 1, 'b': 2, 'c': 3},
+       [('b', 'x')],
+       {'a': PartitionSpec(), 'b': PartitionSpec('x'), 'c': PartitionSpec()}),
+      ('_first_match', {'a': 1, 'bb': 2, 'c': 3},
+       [('b', ('x',)), ('bb', ('x', 'y'))],
+       {'a': PartitionSpec(), 'bb': PartitionSpec('x'), 'c': PartitionSpec()}),
+  )
+  def test(self, tree, axis_resources_regexes, expected):
+    output = partitioning.tree_axis_resources_from_regexes(
+        tree=tree, axis_resources_regexes=axis_resources_regexes)
+    self.assertEqual(output, expected)
+
+
 def _make_device(**kwargs):
   """Returns a new mocked device."""
   device = mock.MagicMock(partitioning.Device)

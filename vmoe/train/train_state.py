@@ -13,7 +13,7 @@
 # limitations under the License.
 
 """TrainState and other related classes."""
-from typing import Dict, Union
+from typing import Any, Callable, Dict, Mapping, Tuple, Union
 
 import flax.training.train_state
 import jax
@@ -28,3 +28,5 @@ class TrainState(flax.training.train_state.TrainState):
 # TrainStateAxisResources is a PyTree with the same structure as TrainState but
 # whose leaves are PartitionSpec objects.
 TrainStateAxisResources = TrainState
+TrainStepFn = Callable[..., 'TrainStepResult']
+TrainStepResult = Tuple[TrainState, Mapping[str, Any]]

@@ -45,6 +45,7 @@ class NoisyTopExpertsPerItemRouter(nn.Module):
   num_experts: int
   num_selected_experts: int = 1
   noise_std: float = 1.0
+  gshard_loss_weight: float = 0.0
   importance_loss_weight: float = 1.0
   load_loss_weight: float = 1.0
   dispatcher: Optional[KwArgs] = None
@@ -79,8 +80,12 @@ class NoisyTopExpertsPerItemRouter(nn.Module):
     gates_softmax = jax.nn.softmax(gates_logits)
     importance_loss = jax.vmap(self._importance_auxiliary_loss)(gates_softmax)
     if self.deterministic or self.noise_std == 0.0:
+      gshard_loss = jax.vmap(self._gshard_auxiliary_loss)(gates_softmax)
       metrics = {
-          "auxiliary_loss": self.importance_loss_weight * importance_loss,
+          "auxiliary_loss": _weighted_sum(
+              (self.gshard_loss_weight, gshard_loss),
+              (self.importance_loss_weight, importance_loss)),
+          "gshard_loss": gshard_loss,
           "importance_loss": importance_loss,
       }
       return gates_softmax, metrics
@@ -95,9 +100,14 @@ class NoisyTopExpertsPerItemRouter(nn.Module):
               self._load_auxiliary_loss,
               num_selected_experts=self.num_selected_experts,
               noise_std=noise_std))(gates_logits, gates_logits_noisy)
+      gshard_loss = jax.vmap(self._gshard_auxiliary_loss)(gates_softmax_noisy)
+
       metrics = {
-          "auxiliary_loss": (self.importance_loss_weight * importance_loss +
-                             self.load_loss_weight * load_loss),
+          "auxiliary_loss": _weighted_sum(
+              (self.gshard_loss_weight, gshard_loss),
+              (self.importance_loss_weight, importance_loss),
+              (self.load_loss_weight, load_loss)),
+          "gshard_loss": gshard_loss,
           "importance_loss": importance_loss,
           "load_loss": load_loss,
       }
@@ -119,6 +129,23 @@ class NoisyTopExpertsPerItemRouter(nn.Module):
     if use_bfloat16:
       dispatcher = vmoe.moe.Bfloat16Dispatcher(dispatcher)
     return dispatcher
+
+  @classmethod
+  def _gshard_auxiliary_loss(cls, gates: Array) -> Array:
+    # See `l_{aux}` in Algorithm 1 in https://arxiv.org/pdf/2006.16668.pdf.
+    _, num_experts = gates.shape
+    # Line (3) in Algorithm 1.
+    mean_gates_per_expert = gates.mean(axis=0)
+    # Lines (11, 13) in Algorithm 1.
+    mean_top1_per_expert = jax.nn.one_hot(
+        jnp.argmax(gates, axis=1), num_experts, dtype=jnp.int32).mean(axis=0)
+    # Note: Only gradients through mean_gates_per_expert affect the gating,
+    # since hard counts from top_k+one_hot are not differentiable.
+    auxiliary_loss = jnp.mean(mean_top1_per_expert * mean_gates_per_expert)
+    # Note: Not mentioned in the paper, but it's done in their source code.
+    # https://github.com/tensorflow/lingvo/blob/84b85514d7ad3652bc9720cb45acfab08604519b/lingvo/core/gshard_layers.py#L2223
+    auxiliary_loss *= num_experts**2
+    return auxiliary_loss
 
   @classmethod
   def _importance_auxiliary_loss(cls, gates: Array) -> Array:
@@ -154,3 +181,72 @@ class NoisyTopExpertsPerItemRouter(nn.Module):
     p_mean = jnp.mean(p, axis=0)
     # Compute p_mean's coefficient of variation squared.
     return (jnp.std(p_mean) / jnp.mean(p_mean))**2
+
+
+class NoisyTopItemsPerExpertRouter(nn.Module):
+  """Noisy TopItemsPerExpert router.
+
+  Instead of picking the Top-K experts with highest score for each item, and
+  then ignore choices that exceed the capacity (C) of any given expert, here we
+  pick the Top-C items with highest score for each expert.
+
+  This makes the load across experts automatically balanced, however the number
+  of experts assigned to each item is not bounded and can vary. Some items may
+  not be routed to any expert. In practice, though, this works very well.
+
+  This was coined "Experts Choice Routing" in https://arxiv.org/abs/2202.09368.
+  """
+  num_experts: int
+  noise_std: float = 1.0
+  dispatcher: Optional[KwArgs] = None
+  deterministic: bool = False
+  dtype: Optional[DType] = None
+
+  @nn.compact
+  def __call__(self, inputs: Array) -> Tuple[BaseDispatcher, Metrics]:
+    gates_softmax = self._compute_gates_softmax(inputs, self.num_experts)
+    dispatcher, metrics = self._create_dispatcher_and_metrics(gates_softmax)
+    metrics["auxiliary_loss"] = 0.
+    return dispatcher, metrics
+
+  @nn.nowrap
+  def _compute_gates_softmax(self, inputs: Array, num_experts: int) -> Array:
+    if inputs.ndim != 3:
+      raise ValueError(f"inputs.ndim must be 3, but it is {inputs.ndim}")
+    dtype = self.dtype or inputs.dtype
+    # Compute the gating logits for each pair of (item, expert).
+    gates_logits = nn.Dense(features=num_experts, use_bias=False,
+                            dtype=dtype, name="dense")(inputs)
+    if self.deterministic or self.noise_std == 0.0:
+      gates_softmax = jax.nn.softmax(gates_logits)
+      return gates_softmax
+    else:
+      noise_std = (1.0 / num_experts) * self.noise_std
+      logits_noise = noise_std * jax.random.normal(
+          key=self.make_rng("gating"), shape=gates_logits.shape)
+      gates_logits_noisy = gates_logits + logits_noise
+      gates_softmax_noisy = jax.nn.softmax(gates_logits_noisy)
+      return gates_softmax_noisy
+
+  @nn.nowrap
+  def _create_dispatcher_and_metrics(self, gates_softmax):
+    # Creates a dispatcher implementing the TopItemsPerExpert routing algorithm.
+    # Notice that each group is dispatched independently.
+    dispatcher_kwargs = dict(**(self.dispatcher or {}))
+    use_bfloat16 = dispatcher_kwargs.pop("bfloat16", False)
+    get_top_items_per_expert_dispatcher_vmapped = jax.vmap(
+        functools.partial(
+            vmoe.moe.get_top_items_per_expert_dispatcher, **dispatcher_kwargs))
+    dispatcher, metrics = get_top_items_per_expert_dispatcher_vmapped(
+        gates_softmax)
+    if use_bfloat16:
+      dispatcher = vmoe.moe.Bfloat16Dispatcher(dispatcher)
+    return dispatcher, metrics
+
+
+def _weighted_sum(*args):
+  """Returns a weighted sum of [(weight, element), ...] for weights > 0."""
+  # Note: some losses might be ill-defined in some scenarios (e.g. they may
+  # have inf/NaN gradients), in those cases we don't apply them on the total
+  # auxiliary loss, by setting their weights to zero.
+  return sum(x * w for w, x in args if w > 0)

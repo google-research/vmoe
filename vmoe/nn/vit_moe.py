@@ -13,7 +13,7 @@
 # limitations under the License.
 
 """Module with gating layers."""
-from typing import Any, Callable, Iterable, Mapping, Optional, Tuple, Type, Union
+from typing import Any, Iterable, Mapping, Optional, Tuple, Type, Union
 
 import flax.linen as nn
 import jax.numpy as jnp
@@ -30,17 +30,6 @@ IdentityLayer = models_vit.IdentityLayer
 KwArgs = Mapping[str, Any]
 Metrics = Mapping[str, Array]
 Shape = Iterable[int]
-
-InitializerFn = Callable[[PRNGKey, Shape, DType], Array]
-
-
-def constant_initializer(constant: float) -> InitializerFn:
-
-  def f(key: PRNGKey, shape: Shape, dtype: DType = jnp.float_) -> Array:
-    ones = nn.initializers.ones(key, shape, dtype)
-    return jnp.asarray(constant, dtype=dtype) * ones
-
-  return f
 
 
 # Slight modification of the VisionTransformer's MlpBlock API.
@@ -115,7 +104,10 @@ class MlpMoeBlock(nn.Module):
     dispatcher, metrics = self.create_router()(inputs)
     # Use the dispatcher to apply a MoE of MlpBlocks.
     mlp_moe_layer = vmoe.moe.sparse_moe_spmd(
-        MlpBlock, has_aux=False, split_rngs=self.create_split_rngs())(
+        MlpBlock,
+        has_aux=False,
+        variable_axes={'params': 0, 'intermediates': 0},
+        split_rngs=self.create_split_rngs())(
             mlp_dim=self.mlp_dim,
             dropout_rate=self.dropout_rate,
             dtype=self.dtype,
@@ -288,7 +280,7 @@ class VisionTransformerMoe(nn.Module):
           features=self.num_classes,
           name='head',
           kernel_init=nn.initializers.zeros,
-          bias_init=constant_initializer(self.head_bias_init))(x)
+          bias_init=nn.initializers.constant(self.head_bias_init))(x)
       return logits, metrics
     else:
       return x, metrics

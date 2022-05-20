@@ -83,7 +83,7 @@ class CreateTrainStateTest(absltest.TestCase):
         input_shape=(16, 224, 224, 3),
         input_axis_resources=PartitionSpec(('a', 'b')),
         train_steps=10)
-    train_state_axis_resources = trainer.tree_axis_resources_from_regexes(
+    train_state_axis_resources = trainer.partitioning.tree_axis_resources_from_regexes(
         tree=jax.eval_shape(train_state_init_fn, rngs),
         axis_resources_regexes=[
             ('kernel', (None, None, None, 'a')),
@@ -281,18 +281,6 @@ class MixupTest(parameterized.TestCase):
           shape=(2,))
 
 
-class ParsePartitionSpecTest(parameterized.TestCase):
-
-  @parameterized.named_parameters(
-      ('_none', None, PartitionSpec()),
-      ('_string', 'a', PartitionSpec('a')),
-      ('_tuple', ('a', ('b', 'c')), PartitionSpec('a', ('b', 'c'))),
-      ('_partition_spec', PartitionSpec('a'), PartitionSpec('a')),
-  )
-  def test(self, spec, expected):
-    self.assertEqual(trainer.parse_partition_spec(spec), expected)
-
-
 class TrainAndEvaluateTest(parameterized.TestCase):
 
   def setUp(self):
@@ -384,42 +372,6 @@ class TrainAndEvaluateTest(parameterized.TestCase):
     mock_get_datasets.return_value = {}
     with self.assertRaisesRegex(KeyError, 'You must have a "train" variant'):
       trainer.train_and_evaluate(config=config, workdir=workdir)
-
-
-class TreeAxisResourcesFromRegexesTest(parameterized.TestCase):
-
-  @parameterized.named_parameters(
-      ('_empty_regexes', {'a': 1, 'b': 2, 'c': 3}, [],
-       {'a': PartitionSpec(), 'b': PartitionSpec(), 'c': PartitionSpec()}),
-      ('_single_string', {'a': 1, 'b': 2, 'c': 3},
-       [('b', 'x')],
-       {'a': PartitionSpec(), 'b': PartitionSpec('x'), 'c': PartitionSpec()}),
-      ('_first_match', {'a': 1, 'bb': 2, 'c': 3},
-       [('b', ('x',)), ('bb', ('x', 'y'))],
-       {'a': PartitionSpec(), 'bb': PartitionSpec('x'), 'c': PartitionSpec()}),
-  )
-  def test(self, tree, axis_resources_regexes, expected):
-    output = trainer.tree_axis_resources_from_regexes(
-        tree=tree, axis_resources_regexes=axis_resources_regexes)
-    self.assertEqual(output, expected)
-
-  def test_train_state(self):
-    params = {'a': 1, 'b': 2, 'c': 3}
-    rngs = {'dropout': None}
-    train_state = trainer.TrainState.create(
-        apply_fn=lambda x: x,
-        params=params,
-        tx=trainer.optimizer.optax.rmsprop(0.1),
-        rngs=rngs)
-    output = trainer.tree_axis_resources_from_regexes(
-        tree=train_state, axis_resources_regexes=[
-            ('.*/a$', ('expert',)),
-            ('.*/c$', (('expert', 'width'),)),
-        ])
-    self.assertIsInstance(output, trainer.TrainState)
-    self.assertEqual(output.params['a'], PartitionSpec('expert'))
-    self.assertEqual(output.params['b'], PartitionSpec())
-    self.assertEqual(output.params['c'], PartitionSpec(('expert', 'width')))
 
 
 class WrapTrainStepWithMixupTest(parameterized.TestCase):

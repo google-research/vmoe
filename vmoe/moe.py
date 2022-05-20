@@ -31,6 +31,7 @@ import math
 from typing import Any, Callable, Dict, Mapping, Optional, Tuple
 
 import flax.core.lift
+import flax.linen.partitioning
 import flax.linen.transforms
 import flax.struct
 import jax
@@ -42,6 +43,7 @@ import vmoe.partitioning
 Array = jnp.ndarray
 PartitionSpec = pjit.PartitionSpec
 with_sharding_constraint = vmoe.partitioning.with_sharding_constraint
+_add_axis_to_metadata = flax.linen.partitioning._add_axis_to_metadata  # pylint: disable=protected-access
 
 
 class BaseDispatcher(abc.ABC):
@@ -248,7 +250,10 @@ def get_top_experts_per_item_dispatcher(gates: Array, name: str,
 
 
 def sparse_moe_spmd(target: flax.linen.transforms.Target,
-                    split_rngs: Mapping[str, bool],
+                    variable_axes: Mapping[flax.core.lift.CollectionFilter,
+                                           flax.core.lift.InOutAxis],
+                    split_rngs: Mapping[flax.core.lift.PRNGSequenceFilter,
+                                        bool],
                     has_aux: bool = False,
                     methods=None):
   """Lift transformation that wraps a target with a Sparse MoE using SPMD.
@@ -270,6 +275,8 @@ def sparse_moe_spmd(target: flax.linen.transforms.Target,
   Args:
     target: A target to wrap with a Sparse MoE (e.g. a flax.linen.Module) with
       methods passed via the `methods` argument.
+    variable_axes: Mapping indicating the axis along each variable collection is
+      "expertified". Typically, this is something like {"params": 0}.
     split_rngs: Mapping indicating whether to split each of the PRNGKeys passed
       to the experts.
     has_aux: If the target returns any auxiliary output that should not be
@@ -292,7 +299,7 @@ def sparse_moe_spmd(target: flax.linen.transforms.Target,
           expert_fn,
           in_axes=0,
           out_axes=0,
-          variable_axes={"params": 0, "intermediates": 0},
+          variable_axes=variable_axes,
           split_rngs=split_rngs)(scopes, *inputs)
       # Combine outputs.
       if has_aux:
@@ -303,6 +310,32 @@ def sparse_moe_spmd(target: flax.linen.transforms.Target,
     return transformed
 
   return flax.linen.transforms.lift_transform(wrapper, target, methods=methods)
+
+
+def sparse_moe_spmd_with_axes(
+    target: flax.linen.transforms.Target,
+    variable_axes: Mapping[flax.core.lift.CollectionFilter,
+                           flax.core.lift.InOutAxis],
+    split_rngs: Mapping[flax.core.lift.PRNGSequenceFilter, bool],
+    partitioning_axis_names: Mapping[str, str],
+    has_aux: bool = False,
+    methods=None):
+  """Lift transformation similar to sparse_moe_spmd with partitioned named axes."""
+  variable_axes = dict(variable_axes)
+  for name in partitioning_axis_names:
+    variable_axes[f"{name}_axes"] = None
+
+  lifted = sparse_moe_spmd(target, variable_axes, split_rngs, has_aux, methods)
+
+  for collection_name, axis in variable_axes.items():
+    if collection_name in partitioning_axis_names:
+      lifted = _add_axis_to_metadata(
+          lifted,
+          axis_pos=axis,
+          axis_name=partitioning_axis_names[collection_name],
+          axis_col=f"{collection_name}_axes")
+
+  return lifted
 
 
 def _cast_to_bfloat16(x: Array) -> Array:

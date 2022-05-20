@@ -24,6 +24,16 @@ from vmoe.nn import routing
 
 class NoisyTopExpertsPerItemRouterTest(absltest.TestCase):
 
+  def test_gshard_auxiliary_loss(self):
+    gates = jnp.asarray([[.5, .4, .1], [.3, .3, .4], [.1, .2, .7],
+                         [.8, .2, .0]])
+    output = routing.NoisyTopExpertsPerItemRouter._gshard_auxiliary_loss(gates)
+    # mean_gates_per_expert = [1.7, 1.1, 1.2] / 4.
+    # mean_top1_per_expert = ([1, 0, 0]+[0, 0, 1]+[0, 0, 1]+[1, 0, 0]) / 4 =
+    # [2, 0, 2] / 4.
+    expected_output = 1.0875
+    self.assertAlmostEqual(expected_output, output, places=6)
+
   def test_importance_auxiliary_loss(self):
     gates = jnp.asarray([[.5, .4, .1], [.3, .3, .4], [.1, .2, .7],
                          [.8, .2, .0]])
@@ -91,7 +101,7 @@ class NoisyTopExpertsPerItemRouterTest(absltest.TestCase):
     layer = routing.NoisyTopExpertsPerItemRouter(
         num_experts=4,
         num_selected_experts=2,
-        noise_std=1.0,
+        noise_std=2.0,
         deterministic=False)
     # y's are dispatch weights, m's are metrics.
     y1, m1 = layer.apply(variables, x, rngs={'gating': jax.random.PRNGKey(0)})

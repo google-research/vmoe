@@ -62,20 +62,24 @@ and each partition will contain 32 / 4 = 8 experts):
    [6, 7]]
 """
 import functools
+import re
 from typing import Any, Optional, Sequence, Tuple, Union
 
 from absl import logging
+import flax.traverse_util
 import jax
 from jax.experimental import maps
 from jax.experimental import pjit
 import numpy as np
 
+AxisResourcesRegexes = Sequence[Tuple[str, 'UnparsedPartitionSpec']]
 Device = jax.lib.xla_client.Device
 Mesh = maps.Mesh
 PartitionSpec = pjit.PartitionSpec
 PyTree = Any
 TpuCoords = Tuple[int, int, int, int]
 OtherCoords = Tuple[int, int]
+UnparsedPartitionSpec = Union[str, Tuple[Union[str, Tuple[str, ...]], ...]]
 
 
 def process_has_contiguous_device_slice(devices: np.ndarray,
@@ -288,6 +292,15 @@ def get_logical_mesh_tile_by_process(
   return Mesh(devices=devices, axis_names=('expert', 'replica'))
 
 
+def parse_partition_spec(spec) -> PartitionSpec:
+  if isinstance(spec, PartitionSpec):
+    return spec
+  if not spec:
+    return PartitionSpec()
+  spec = (spec,) if isinstance(spec, str) else tuple(spec)
+  return PartitionSpec(*spec)
+
+
 def log_logical_mesh(mesh: Mesh, *, logger=logging):
   """Prints the logical device mesh to the logs."""
   logger.info('Logical device mesh has axis_names = %r', mesh.axis_names)
@@ -327,6 +340,70 @@ def log_logical_mesh(mesh: Mesh, *, logger=logging):
     for i in range(coords.shape[0]):
       logger.info('| %s |', row(i))
     logger.info('%s', '+-' + ('-' * row_length) + '-+')
+
+
+def tree_axis_resources_from_regexes(
+    *,
+    tree: PyTree,
+    axis_resources_regexes: AxisResourcesRegexes,
+) -> PyTree:
+  """Creates a PyTree with PartitionSpec leaves.
+
+  Examples:
+    >>> tree = {
+    >>>   'dense': {'kernel': np.zeros((5, 10))},
+    >>>   'moe': {
+    >>>     'kernel': np.zeros((32, 10, 10)),
+    >>>     'router': np.zeros((10, 32)),
+    >>>   },
+    >>> }
+    >>> axis_resources_regexes = [
+    >>>   ('.*/moe/kernel', ('expert',))
+    >>> ]
+    >>> resources = tree_axis_resources_from_regexes(
+    >>>   tree=tree, axis_resources_regexes=axis_resources_regexes)
+    >>> print(resources)
+    {
+      'dense': {'kernel': PartitionSpec()},
+      'moe': {
+        'kernel': PartitionSpec(('expert',)),
+        'router': PartitionSpec(),
+      },
+    }
+
+  Args:
+    tree: A serializable PyTree (e.g. FrozenDict, TrainState, ...).
+    axis_resources_regexes: A sequence of tuples (regex, spec_tuple), where
+      `regex` is a Python regular expression to match the keys from the tree,
+      and `spec_tuple` is a tuple of strings, or tuple of tuples of strings.
+
+  Returns:
+    A PyTree with the same structure as `tree`, with PartitionSpec leaves.
+  """
+  axis_resources_regexes = tuple(
+      (re.compile(regex), parse_partition_spec(spec))
+      for regex, spec in axis_resources_regexes)
+
+  def search_partition_spec(key: str) -> PartitionSpec:
+    for regex, partition_spec in axis_resources_regexes:
+      if regex.search(key):
+        return partition_spec
+    return PartitionSpec()
+
+  # NOTE: We use flax.serialization.to_state_dict to convert an arbitrary PyTree
+  # to a dict, so that we can flatten it's structure using
+  # flax.traverse_util.flatten_dict. This is not bulletproof, but works for our
+  # standard cases (`tree` is a dict, or a TrainState).
+  empty_node = flax.traverse_util.empty_node
+  flat_tree_dict = flax.traverse_util.flatten_dict(
+      flax.serialization.to_state_dict(tree), keep_empty_nodes=True)
+  axis_resources = {
+      k: empty_node if v is empty_node else search_partition_spec('/'.join(k))
+      for k, v in flat_tree_dict.items()
+  }
+  axis_resources = flax.traverse_util.unflatten_dict(axis_resources)
+  axis_resources = flax.serialization.from_state_dict(tree, axis_resources)
+  return axis_resources
 
 
 def tree_global_shape(tree: PyTree, axis_resources: PyTree,

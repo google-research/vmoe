@@ -27,6 +27,8 @@ import jax.numpy as jnp
 import numpy as np
 from vmoe import moe
 
+PartitionSpec = moe.PartitionSpec
+
 
 class DispatcherTest(parameterized.TestCase):
   """Tests for the dispatcher classes.
@@ -242,6 +244,15 @@ class DummyExpert(nn.Module):
     return x + p
 
 
+class DummyExpertWithAxes(nn.Module):
+
+  @nn.compact
+  def __call__(self, x):
+    p = nn.partitioning.param_with_axes(
+        'p', nn.initializers.normal(), (1,), axes=('dim',))
+    return x + p
+
+
 class SparseMoeSpmdLayerTest(parameterized.TestCase):
 
   @classmethod
@@ -377,7 +388,8 @@ class SparseMoeSpmdLayerTest(parameterized.TestCase):
     data_partition_spec = pjit.PartitionSpec(('expert', 'replica'))
 
     def init(rng):
-      moe_layer = moe.sparse_moe_spmd(DummyExpert, split_rngs=split_rngs)()
+      moe_layer = moe.sparse_moe_spmd(
+          DummyExpert, variable_axes={'params': 0}, split_rngs=split_rngs)()
       x = self._generate_data(batch_size, group_size, data_partition_spec)
       dispatcher = getattr(self, generate_dispatcher_fn)(
           batch_size, group_size, num_experts, capacity, data_partition_spec)
@@ -407,7 +419,8 @@ class SparseMoeSpmdLayerTest(parameterized.TestCase):
 
     def apply(variables):
       moe_layer = moe.sparse_moe_spmd(
-          DummyExpert, split_rngs={'params': False})()
+          DummyExpert,
+          variable_axes={'params': 0}, split_rngs={'params': False})()
       x = self._generate_data(batch_size, group_size, data_partition_spec)
       dispatcher = getattr(self, generate_dispatcher_fn)(
           batch_size, group_size, num_experts, capacity, data_partition_spec)
@@ -433,6 +446,87 @@ class SparseMoeSpmdLayerTest(parameterized.TestCase):
       devices = devices.reshape(num_devices, 1)
     with maps.Mesh(devices, ('expert', 'replica')):
       return apply_pjit(variables)
+
+
+class SparseMoeSpmdWithAxesLayerTest(parameterized.TestCase):
+  # Tests sparse_moe_spmd lift transform with Linen's partitioning utils.
+
+  @parameterized.named_parameters(
+      ('_num_expert_partitions_1', 1),
+      ('_num_expert_partitions_2', 2),
+      ('_num_expert_partitions_4', 4),
+  )
+  def test(self, num_expert_partitions):
+    devices = np.asarray(jax.local_devices())
+    if devices.size % num_expert_partitions != 0:
+      self.skipTest(
+          f'The number of devices must be multiple of {num_expert_partitions}')
+    devices = devices.reshape(-1, num_expert_partitions)
+    G, S, E, C = devices.size, 16, 4, 4  # pylint: disable=invalid-name
+
+    class Foo(nn.Module):
+
+      @nn.compact
+      def __call__(self, x, w):
+        # x.shape is (G, S, D).
+        moe_layer = moe.sparse_moe_spmd_with_axes(
+            DummyExpertWithAxes,
+            variable_axes={'params': 0},
+            split_rngs={'params': True},
+            partitioning_axis_names={'params': 'expert'})(name='moe')
+        dispatcher = moe.EinsumDispatcher(combine_weights=w)
+        return moe_layer(dispatcher, x)
+
+    # Check that the variables have the expected shape.
+    variables_shape = jax.eval_shape(
+        Foo().init, {'params': jax.random.PRNGKey(0)},
+        jax.ShapeDtypeStruct(shape=(G, S, 1), dtype=jnp.float32),
+        jax.ShapeDtypeStruct(shape=(G, S, E, C), dtype=jnp.float32))
+    self.assertIn('params', variables_shape)
+    self.assertIn('params_axes', variables_shape)
+    self.assertEqual(variables_shape['params']['moe']['p'].shape, (E, 1))
+
+    # Define {in,out}_axis_resources for pjit.
+    axis_rules = [('expert', 'Y'), ('dim', None)]
+    data_axis_resources = PartitionSpec(('X', 'Y'))
+    variables_axis_resources = flax.core.freeze({
+        'params':
+            jax.tree_map(
+                lambda x: nn.partitioning.logical_to_mesh_axes(x, axis_rules),
+                nn.partitioning.get_axis_names(variables_shape['params_axes'])),
+    })
+    pjit_in_axis_resources = (
+        variables_axis_resources, data_axis_resources, data_axis_resources)
+    pjit_out_axis_resources = data_axis_resources
+
+    variables = flax.core.freeze({
+        'params': {'moe': {'p': np.asarray([1, 2, 3, 4]).reshape((4, 1))}}
+    })
+    # Final shape of w is (G, S, 1).
+    x = np.tile(
+        np.arange(S).reshape(1, S, 1),
+        reps=[devices.size, 1, 1]).astype(np.float32)
+    # Example 0 dispatched to expert_idx=0, buffer_idx=0. Output = 0 + 1 = 1.
+    # ...
+    # Example 3 dispatched to expert_idx=0, buffer_idx=3. Output = 3 + 1 = 4.
+    # Example 4 dispatched to expert_idx=1, buffer_idx=0. Output = 4 + 2 = 6.
+    # ...
+    # Example 15 dispatched to expert_idx=3, buffer_idx=3. Output = 15 + 4 = 19.
+    # Final shape of w is (G, S, E, C).
+    w = np.tile(
+        np.arange(S).reshape(1, S, 1, 1) == np.arange(S).reshape(1, 1, E, C),
+        reps=[devices.size, 1, 1, 1]).astype(np.float32)
+
+    with maps.Mesh(devices, ('X', 'Y')), \
+         nn.partitioning.axis_rules(axis_rules):
+      output = pjit.pjit(
+          fun=lambda v, x, w: Foo().apply(v, x, w),
+          in_axis_resources=pjit_in_axis_resources,
+          out_axis_resources=pjit_out_axis_resources)(variables, x, w)
+    expected_output = np.tile(
+        (np.arange(S) + (np.arange(S) // 4 + 1)).reshape(1, S, 1),
+        reps=[devices.size, 1, 1]).astype(np.float32)
+    np.testing.assert_array_almost_equal(output, expected_output, decimal=5)
 
 
 if __name__ == '__main__':

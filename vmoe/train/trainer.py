@@ -16,7 +16,6 @@
 import functools
 import multiprocessing.pool
 import os
-import re
 import time
 from typing import Any, Callable, Dict, Mapping, Optional, Sequence, Tuple, Union
 
@@ -54,7 +53,6 @@ from vmoe.train import train_state as train_state_module
 
 Array = jax.numpy.ndarray
 AsyncResult = multiprocessing.pool.AsyncResult
-AxisResourcesRegexes = Sequence[Tuple[str, 'UnparsedPartitionSpec']]
 Dataset = input_pipeline.tf.data.Dataset
 Mesh = partitioning.Mesh
 PartitionSpec = partitioning.PartitionSpec
@@ -67,8 +65,7 @@ ThreadPool = multiprocessing.pool.ThreadPool
 TrainState = train_state_module.TrainState
 TrainStateAxisResources = train_state_module.TrainStateAxisResources
 TrainStateInitFromScratchFn = Callable[[Mapping[str, PRNGKey]], TrainState]
-TrainStepFn = Callable[..., Tuple[TrainState, Mapping[str, Any]]]
-UnparsedPartitionSpec = Union[str, Tuple[Union[str, Tuple[str, ...]], ...]]
+TrainStepFn = train_state_module.TrainStepFn
 
 
 _getattr = getattr  # Alias of _getattr so that we can mock it in tests.
@@ -498,15 +495,6 @@ def override_base_config(
   return output
 
 
-def parse_partition_spec(spec) -> PartitionSpec:
-  if isinstance(spec, PartitionSpec):
-    return spec
-  if not spec:
-    return PartitionSpec()
-  spec = (spec,) if isinstance(spec, str) else tuple(spec)
-  return PartitionSpec(*spec)
-
-
 def train_step(
     state: TrainState,
     images: Array,
@@ -565,7 +553,7 @@ def _train_and_evaluate(config: ml_collections.ConfigDict, workdir: str,
   # is split among all axes of the logical device mesh, meaning that data is
   # fully partitioned, as usual.
   input_axis_resources = config.get('input_axis_resources', (mesh.axis_names,))
-  input_axis_resources = parse_partition_spec(input_axis_resources)
+  input_axis_resources = partitioning.parse_partition_spec(input_axis_resources)
 
   train_state_initialize_fn = create_train_state_initialize_from_scratch_fn(
       model=create_flax_model(config=config.model, deterministic=False),
@@ -576,7 +564,7 @@ def _train_and_evaluate(config: ml_collections.ConfigDict, workdir: str,
   train_state_rngs = utils.make_rngs(
       ('params',) + tuple(config.get('extra_rng_keys', [])),
       config.get('seed', 0))
-  train_state_axis_resources = tree_axis_resources_from_regexes(
+  train_state_axis_resources = partitioning.tree_axis_resources_from_regexes(
       tree=jax.eval_shape(train_state_initialize_fn, train_state_rngs),
       axis_resources_regexes=config.params_axis_resources)
   train_state = restore_or_create_train_state(
@@ -685,70 +673,6 @@ def _train_and_evaluate(config: ml_collections.ConfigDict, workdir: str,
       thread_pool=config.get('save_checkpoint', {}).get('num_threads')).wait()
   multihost_utils.sync_devices('checkpoints:release')
   logging.info('Training completed.')
-
-
-def tree_axis_resources_from_regexes(
-    *,
-    tree: PyTree,
-    axis_resources_regexes: AxisResourcesRegexes,
-) -> PyTree:
-  """Creates a PyTree with PartitionSpec leaves.
-
-  Examples:
-    >>> tree = {
-    >>>   'dense': {'kernel': np.zeros((5, 10))},
-    >>>   'moe': {
-    >>>     'kernel': np.zeros((32, 10, 10)),
-    >>>     'router': np.zeros((10, 32)),
-    >>>   },
-    >>> }
-    >>> axis_resources_regexes = [
-    >>>   ('.*/moe/kernel', ('expert',))
-    >>> ]
-    >>> resources = tree_axis_resources_from_regexes(
-    >>>   tree=tree, axis_resources_regexes=axis_resources_regexes)
-    >>> print(resources)
-    {
-      'dense': {'kernel': PartitionSpec()},
-      'moe': {
-        'kernel': PartitionSpec(('expert',)),
-        'router': PartitionSpec(),
-      },
-    }
-
-  Args:
-    tree: A serializable PyTree (e.g. FrozenDict, TrainState, ...).
-    axis_resources_regexes: A sequence of tuples (regex, spec_tuple), where
-      `regex` is a Python regular expression to match the keys from the tree,
-      and `spec_tuple` is a tuple of strings, or tuple of tuples of strings.
-
-  Returns:
-    A PyTree with the same structure as `tree`, with PartitionSpec leaves.
-  """
-  axis_resources_regexes = tuple(
-      (re.compile(regex), parse_partition_spec(spec))
-      for regex, spec in axis_resources_regexes)
-
-  def search_partition_spec(key: str) -> PartitionSpec:
-    for regex, partition_spec in axis_resources_regexes:
-      if regex.search(key):
-        return partition_spec
-    return PartitionSpec()
-
-  # NOTE: We use flax.serialization.to_state_dict to convert an arbitrary PyTree
-  # to a dict, so that we can flatten it's structure using
-  # flax.traverse_util.flatten_dict. This is not bulletproof, but works for our
-  # standard cases (`tree` is a dict, or a TrainState).
-  empty_node = flax.traverse_util.empty_node
-  flat_tree_dict = flax.traverse_util.flatten_dict(
-      flax.serialization.to_state_dict(tree), keep_empty_nodes=True)
-  axis_resources = {
-      k: empty_node if v is empty_node else search_partition_spec('/'.join(k))
-      for k, v in flat_tree_dict.items()
-  }
-  axis_resources = flax.traverse_util.unflatten_dict(axis_resources)
-  axis_resources = flax.serialization.from_state_dict(tree, axis_resources)
-  return axis_resources
 
 
 def wrap_train_step_with_mixup(
