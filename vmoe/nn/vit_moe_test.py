@@ -145,6 +145,29 @@ class VitMoeTest(parameterized.TestCase):
     chex.assert_trees_all_equal_comparator(
         different_fn, error_msg_fn, output1, output2)
 
+  @parameterized.named_parameters(
+      ('map', 'map', 4, {'MapHead': {
+          'probe': (1, 1, 8),
+          'MultiHeadDotProductAttention': EXPECTED_DEFAULT_ATTENTION_SHAPES,
+          'LayerNorm': EXPECTED_DEFAULT_LAYER_NORM_SHAPES,
+          'Mlp': EXPECTED_DEFAULT_MLP_SHAPES,
+      }}),
+      ('gap', 'gap', 4, {}),
+      ('token', 'token', 5, {}),
+  )
+  def test_classifier(self, classifier, seq_length, params_subset):
+    config = copy.deepcopy(DEFAULT_TEST_CONFIG)
+    config['classifier'] = classifier
+    model = vit_moe.VisionTransformerMoe(**config)
+    rngs = dict(params=jax.random.PRNGKey(0), gating=jax.random.PRNGKey(1))
+    x = jax.ShapeDtypeStruct((16, 4, 4, 3), jax.numpy.float32)
+    shapes = jax.tree_map(lambda x: x.shape,
+                          jax.eval_shape(model.init, rngs, x))
+    shapes = shapes.unfreeze()
+    self.assertDictEqual(shapes['params']['Encoder']['posembed_input'],
+                         {'pos_embedding': (1, seq_length, 8)})
+    self.assertDictContainsSubset(params_subset, shapes['params'])
+
 
 if __name__ == '__main__':
   absltest.main()
