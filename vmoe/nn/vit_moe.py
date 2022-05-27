@@ -120,6 +120,28 @@ class MlpMoeBlock(nn.Module):
     return outputs, metrics
 
 
+class MapHead(nn.Module):
+  """Multihead Attention Pooling."""
+  mlp_dim: int
+  num_heads: int
+
+  @nn.compact
+  def __call__(self, x):
+    assert x.ndim == 3, f'Unexpected ndim = {x.ndim}, it must be 3'
+    probe = self.param('probe', nn.initializers.xavier_uniform(),
+                       (1, 1, x.shape[-1]), x.dtype)
+    probe = jnp.tile(probe, [x.shape[0], 1, 1])
+    x = nn.MultiHeadDotProductAttention(
+        num_heads=self.num_heads,
+        kernel_init=nn.initializers.xavier_uniform(),
+        deterministic=True,
+        name='MultiHeadDotProductAttention')(inputs_q=probe, inputs_kv=x)
+    y = nn.LayerNorm(name='LayerNorm')(x)
+    y = MlpBlock(
+        mlp_dim=self.mlp_dim, deterministic=True, name='Mlp')(y)
+    return (x + y)[:, 0, :]
+
+
 class EncoderBlock(nn.Module):
   """Encoder block with a Sparse MoE of MLPs."""
   mlp_block: Type[nn.Module]
@@ -267,6 +289,10 @@ class VisionTransformerMoe(nn.Module):
       x = x[:, 0]
     elif self.classifier == 'gap':
       x = x.mean(axis=tuple(range(1, x.ndim - 1)))
+    elif self.classifier == 'map':
+      x = MapHead(
+          num_heads=self.encoder['num_heads'], mlp_dim=self.encoder['mlp_dim'],
+          name='MapHead')(x)
     else:
       raise ValueError(f'Unknown classifier: {self.classifier!r}')
     if self.representation_size is not None:
