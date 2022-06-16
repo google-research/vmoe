@@ -18,10 +18,12 @@ from typing import Any, Callable, Mapping, Optional, Sequence, Tuple, Union
 
 import flax.serialization
 import flax.traverse_util
+import jax.numpy as jnp
 import optax
-import vmoe.train.schedule as schedule
-import vmoe.utils as utils
+from vmoe import utils
+from vmoe.train import schedule
 
+DType = type(jnp.float32)
 PyTree = Any
 MaskFn = Callable[[optax.Params], PyTree]
 WeightDecay = Union[float, Sequence[Tuple[str, float]]]
@@ -111,6 +113,8 @@ def create_optimizer(
   # we want to control explicitly how to add weight decay.
   if name == 'adam':
     ops.append(optax.scale_by_adam(**optim_kwargs))
+  elif name == 'big_vision_adafactor':
+    ops.append(scale_by_big_vision_adafactor(**optim_kwargs))
   elif name == 'sgd':
     # Optionally, add momentum with SGD.
     ops.append(trace_momentum(**optim_kwargs))
@@ -225,6 +229,57 @@ def gradient_scaling(
     return updates, state
 
   return optax.GradientTransformation(init_fn, update_fn)
+
+
+def scale_by_big_vision_adafactor(
+    decay_rate: float = 0.8,
+    decay_rate_max: float = 0.999,
+    decay_offset: int = 0,
+    eps: float = 1e-30,
+    min_dim_size_to_factor: int = 32,
+    momentum: float = 0.9,
+    momentum_dtype: DType = jnp.float32,
+) -> optax.GradientTransformation:
+  """Custom Adafactor used to train V-MoE-15B in https://arxiv.org/abs/2106.05974.
+
+  Forked from: https://github.com/google-research/big_vision.
+
+  Important: In models with MoE layers, one must set min_dim_size_to_factor to
+  at least num_experts + 1, to ensure the same behaviour as in the paper (i.e.
+  the params are not factorized across the experts axis).
+  TODO(jpuigcerver): Generalize this to allow custom factorization rules.
+
+  Args:
+    decay_rate: controls exponential decay schedule of squared grads.
+    decay_rate_max: maximum decay rate for the exponentially weighted average
+      of squared grads.
+    decay_offset: for finetuning, one may set this to the starting step-number
+        of the fine tuning phase.
+    eps: regularization constant for squared gradient.
+    min_dim_size_to_factor: only factor accumulator if two array dimensions
+      are at least this size.
+    momentum: decay rate for the exponentially weighted average of grads.
+    momentum_dtype: dtype used to store the exponentially weighted average of
+      grads.
+
+  Returns:
+    A GradientTransform.
+  """
+  def _decay_rate_pow(step, exponent):
+    """Second-order moment decay schedule."""
+    t = jnp.array(step, jnp.float32) + 1.0
+    return jnp.minimum(decay_rate_max, 1.0 - t**(-exponent))
+
+  scale_by_rms = optax.scale_by_factored_rms(
+      factored=True,
+      decay_rate=decay_rate,
+      step_offset=decay_offset,
+      min_dim_size_to_factor=min_dim_size_to_factor,
+      epsilon=eps,
+      decay_rate_fn=_decay_rate_pow)
+  mom = (optax.ema(momentum, debias=False, accumulator_dtype=momentum_dtype)
+         if momentum else optax.identity())
+  return optax.chain(scale_by_rms, mom)
 
 
 def trace_momentum(momentum: Optional[float] = None, **kwargs):

@@ -66,6 +66,14 @@ class CreateOptimizerTest(parameterized.TestCase):
           'learning_rate': 0.1,
           'gradient_clip': {'absolute_value': 1.},
       }, {'x': -0.54719, 'y': -1.54719}),
+      ('_big_vision_adafactor', {
+          'name': 'big_vision_adafactor',
+          'decay_rate': 0.8,
+          'decay_rate_max': 0.999,
+          'learning_rate': 0.1,
+          'momentum': 0.9,
+          'momentum_dtype': jnp.bfloat16,
+      }, {'x': -0.54719, 'y': -1.54719}),
       ('_sgd_weight_decay', {
           'name': 'sgd',
           'learning_rate': 0.1,
