@@ -20,28 +20,17 @@ Xiaohua Zhai and other collaborators from Google Brain Zurich.
 import ast
 from typing import Any, Callable, Dict, Iterator, Optional, Union
 
-from absl import logging
-import cachetools
 import jax
 import ml_collections
 import numpy as np
 import tensorflow as tf
-import tensorflow_datasets as tfds
+import vmoe.data.builder
 import vmoe.data.pp_ops
 
 DEFAULT_SHUFFLE_BUFFER = 50_000
 VALID_KEY = '__valid__'
 Data = Dict[str, Any]
-
-
-@cachetools.cached(
-    cache={},
-    key=lambda name, data_dir, *_: cachetools.keys.hashkey(name, data_dir))
-def _get_dataset_builder(name, data_dir, manual_dir, try_gcs):
-  data_builder = tfds.builder(name=name, data_dir=data_dir, try_gcs=try_gcs)
-  data_builder.download_and_prepare(
-      download_config=tfds.download.DownloadConfig(manual_dir=manual_dir))
-  return data_builder
+DatasetBuilder = vmoe.data.builder.DatasetBuilder
 
 
 def get_datasets(
@@ -54,71 +43,57 @@ def get_datasets(
           f'The config for the {variant!r} variant is not a ConfigDict.')
     variant_config = variant_config.to_dict()
     _ = variant_config.pop('prefetch_device', None)
-    datasets[variant] = get_data_from_tfds(variant=variant, **variant_config)
+    datasets[variant] = get_dataset(variant=variant, **variant_config)
   return datasets
 
 
-def get_data_from_tfds(*,
-                       variant: str,
-                       name: str,
-                       split: str,
-                       batch_size: int,
-                       process: str,
-                       cache: Optional[str] = None,
-                       data_dir: Optional[str] = None,
-                       manual_dir: Optional[str] = None,
-                       num_parallel_calls: int = 128,
-                       prefetch: Optional[Union[int, str]] = None,
-                       shuffle_buffer: int = DEFAULT_SHUFFLE_BUFFER,
-                       shuffle_seed: Optional[int] = None,
-                       try_gcs: bool = False) -> tf.data.Dataset:
-  """Returns a Tensorflow dataset from TFDS.
+def get_dataset(
+    *,
+    variant: str,
+    name: str,
+    split: str,
+    batch_size: int,
+    process: str,
+    cache: Optional[str] = None,
+    num_parallel_calls: int = 128,
+    prefetch: Optional[Union[int, str]] = None,
+    shuffle_buffer: int = DEFAULT_SHUFFLE_BUFFER,
+    shuffle_seed: Optional[int] = None,
+    **extra_builder_kwargs) -> tf.data.Dataset:
+  """Returns a Tensorflow dataset.
 
   Args:
     variant: Variant (e.g. 'train', 'validation', ...).
     name: Name of the dataset in TFDS.
-    split: String with the split to use (e.g. 'train', 'validation[:1000}, etc).
+    split: String with the split to use (e.g. 'train', 'validation[:100]', etc).
     batch_size: (Global) batch size to use. We assume that this batch size is
       evenly split among all devices.
     process: String representing the processing operations to perform (e.g.
       'decode|resize(128)|flip_lr'. Check the available ops in `pp_ops.py`).
     cache: If 'loaded' caches the dataset after loading it. If 'batched',
       caches it after batching. If `None`, no caching is done.
-    data_dir: Optional directory where the data is stored. If None, it uses the
-      default TFDS data dir.
-    manual_dir: Optional directory where the raw data is stored. This is
-      necessary to prepare some datasets (e.g. 'imagenet2012'), since TFDS does
-      not suppport downloading them directly.
     num_parallel_calls: Process this number of examples in parallel.
     prefetch: If given, prefetches this number of batches.
     shuffle_buffer: Size of the shuffle buffer. Only used for training.
     shuffle_seed: Optional seed for shuffling files and examples.
-    try_gcs: If True, tries to download data from TFDS' Google Cloud bucket.
+    **extra_builder_kwargs: Additional kwargs passed to the DatasetBuilder.
 
   Returns:
     A tf.data.Dataset.
   """
-  data_builder = _get_dataset_builder(name, data_dir, manual_dir, try_gcs)
-  split_name, start, end, smaller_range = get_data_range(
-      data_builder, split, jax.process_index(), jax.process_count())
-  logging.info(
-      'Process %d / %d will handle examples from %d to %d, from split %r of dataset %r.',
-      jax.process_index(), jax.process_count(), start, end, split_name, name)
-  data_range = tfds.core.ReadInstruction(split_name, start, end)
-  read_config = tfds.ReadConfig(
-      shuffle_seed=shuffle_seed, skip_prefetch=True, try_autocache=False)
+  builder = vmoe.data.builder.get_dataset_builder(
+      name=name,
+      split=split,
+      shuffle_files=variant == 'train',
+      shuffle_seed=shuffle_seed,
+      **extra_builder_kwargs)
   # Compute the batch size per process.
   if (batch_size % jax.process_count() or batch_size % jax.device_count()):
     raise ValueError(f'batch_size must divide the process and device count, '
                      f'but got {batch_size}, {jax.process_count()}, '
                      f'and {jax.device_count()} respectively.')
   batch_size_per_process = batch_size // jax.process_count()
-  # Get dataset from TFDS as a tf.data.Dataset.
-  data = data_builder.as_dataset(
-      split=data_range,
-      decoders={'image': tfds.decode.SkipDecoding()},
-      shuffle_files=variant == 'train',
-      read_config=read_config)
+  data = builder.as_dataset()
   # Optionally, cache loaded data.
   if cache == 'loaded':
     data = data.cache()
@@ -140,12 +115,7 @@ def get_data_from_tfds(*,
       num_parallel_calls=num_parallel_calls,
       deterministic=False)
   if variant != 'train':
-    # All processes must iterate over the same number of examples, thus
-    # processes with a smaller range need one extra padded example. After that,
-    # the number of examples iterated has to be multiple of
-    # batch_size_per_process, thus we add the extra fake examples if necessary.
-    num_fake_examples = int(smaller_range)
-    num_fake_examples += -(end - start + smaller_range) % batch_size_per_process
+    num_fake_examples = builder.get_num_fake_examples(batch_size_per_process)
     if num_fake_examples > 0:
       fake_elem = tf.nest.map_structure(
           lambda spec: tf.zeros(spec.shape, spec.dtype), data.element_spec)
@@ -166,22 +136,14 @@ def get_data_from_tfds(*,
 
 def get_data_num_examples(config: ml_collections.ConfigDict) -> int:
   """Returns the total number of examples of a dataset specified by a config."""
-  data_builder = tfds.builder(
-      name=config.name, data_dir=config.get('tfds_data_dir'))
-  data_builder.download_and_prepare(
-      download_config=tfds.download.DownloadConfig(
-          manual_dir=config.get('tfds_manual_dir')))
-  # 1. Canonicalize input to absolute indices.
-  abs_ri = tfds.core.ReadInstruction.from_spec(config.split).to_absolute(
-      data_builder.info.splits)
-  # 2. Make sure it's only 1 continuous block.
-  assert len(abs_ri) == 1, 'Multiple non-continuous TFDS splits not supported'
-  split_range = abs_ri[0]
-  # 3. Get its start/end indices.
-  num_examples = data_builder.info.splits[split_range.splitname].num_examples
-  split_start = split_range.from_ or 0
-  split_end = split_range.to or num_examples
-  return split_end - split_start
+  # These are kwarg keys used when creating the pipeline, not the builder.
+  pipeline_keys = ('variant', 'batch_size', 'process', 'cache',
+                   'num_parallel_calls', 'prefetch', 'shuffle_buffer')
+  builder_kwargs = {
+      k: v for k, v in config.to_dict().items() if k not in pipeline_keys
+  }
+  builder = vmoe.data.builder.get_dataset_builder(**builder_kwargs)
+  return builder.num_examples
 
 
 def get_data_process_fn(process_str: str) -> Callable[[Data], Data]:
@@ -202,50 +164,6 @@ def get_data_process_fn(process_str: str) -> Callable[[Data], Data]:
     ops.append(op_fn)
 
   return _compose_fns(*ops)
-
-
-def get_data_range(builder, split: str, process_id: int, process_count: int):
-  """Returns a (sub)split adapted to a given process.
-
-  The examples in the given `split` are partitioned into `process_count`
-  subsets. If the total number of examples in the split is `total_examples`,
-  all processes will handle at least `total_examples // process_count` of them.
-  If the total number of examples is not a multiple of `process_count`, the
-  first `total_examples % process_count` processes handle one extra example.
-
-  Args:
-    builder: TFDS dataset builder.
-    split: String of the split to use (e.g. 'train'). It can be a partial
-      contiguous split as well (e.g. 'train[10%:20%]' or 'train[:10000]').
-    process_id: Id of the process to compute the range for.
-    process_count: Number of processes.
-
-  Returns:
-    A tuple (split_name, start_index, end_index).
-  """
-  # 1. Canonicalize input to absolute indices.
-  abs_ri = tfds.core.ReadInstruction.from_spec(split).to_absolute(
-      builder.info.splits)
-  # 2. Make sure it's only 1 continuous block.
-  assert len(abs_ri) == 1, 'Multiple non-continuous TFDS splits not supported'
-  full_range = abs_ri[0]
-  # 3. Get its start/end indices.
-  full_range_examples = builder.info.splits[full_range.splitname].num_examples
-  full_start = full_range.from_ or 0
-  full_end = full_range.to or full_range_examples
-  # 4. Compute each host's subset.
-  # Each host will handle at least `examples_per_host` examples. When the total
-  # number of examples is not divisible by the number of processes, the first
-  # `remainder` hosts will handle one extra example each.
-  examples_per_host = (full_end - full_start) // process_count
-  remainder = (full_end - full_start) % process_count
-  start = full_start + examples_per_host * process_id
-  start += process_id if process_id < remainder else remainder
-  end = start + examples_per_host
-  end += 1 if process_id < remainder else 0
-  # If True, this range is one example smaller than other processes.
-  smaller_range = remainder > 0 and process_id >= remainder
-  return full_range.splitname, start, end, smaller_range
 
 
 def make_dataset_iterator(dataset: tf.data.Dataset) -> Iterator[Dict[str, Any]]:

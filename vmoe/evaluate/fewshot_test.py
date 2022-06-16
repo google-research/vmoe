@@ -97,9 +97,8 @@ class FewShotPeriodicActionTest(absltest.TestCase):
     mock_info.info.features = {'label': mock_label_info}
     self.mock_tfds_builder.return_value = mock_info
 
-    self.mock_get_data_from_tfds = self.enter_context(
-        mock.patch.object(fewshot.vmoe.data.input_pipeline,
-                          'get_data_from_tfds'))
+    self.mock_get_dataset = self.enter_context(
+        mock.patch.object(fewshot.vmoe.data.input_pipeline, 'get_dataset'))
     # 4 batches of 16 images each. The last 4 images are fake.
     images = np.tile(np.arange(4 * 16).reshape((4, 16, 1, 1, 1)),
                      (1, 1, 32, 32, 3)).astype(np.float32)
@@ -113,7 +112,7 @@ class FewShotPeriodicActionTest(absltest.TestCase):
         'label': labels,
         fewshot.VALID_KEY: valid,
     })
-    self.mock_get_data_from_tfds.return_value = dataset
+    self.mock_get_dataset.return_value = dataset
 
   @classmethod
   def _apply_fn(cls, variables, images, rngs=None):

@@ -31,7 +31,7 @@ import jax.experimental.pjit
 import jax.numpy as jnp
 import numpy as np
 import tensorflow as tf
-import tensorflow_datasets as tfds
+import tensorflow_datasets.public_api as tfds
 import vmoe.data.input_pipeline
 import vmoe.data.pjit_utils
 import vmoe.utils
@@ -285,7 +285,7 @@ def _get_datasets(
 
   @cachetools.cached(cache={})
   def _get_dataset(name: str, split: str) -> tf.data.Dataset:
-    return vmoe.data.input_pipeline.get_data_from_tfds(
+    return vmoe.data.input_pipeline.get_dataset(
         variant='fewshot', name=name, split=split, **dataset_kwargs)
 
   @cachetools.cached(cache={})
