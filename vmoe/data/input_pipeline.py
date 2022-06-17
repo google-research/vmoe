@@ -138,7 +138,8 @@ def get_data_num_examples(config: ml_collections.ConfigDict) -> int:
   """Returns the total number of examples of a dataset specified by a config."""
   # These are kwarg keys used when creating the pipeline, not the builder.
   pipeline_keys = ('variant', 'batch_size', 'process', 'cache',
-                   'num_parallel_calls', 'prefetch', 'shuffle_buffer')
+                   'num_parallel_calls', 'prefetch', 'prefetch_device',
+                   'shuffle_buffer')
   builder_kwargs = {
       k: v for k, v in config.to_dict().items() if k not in pipeline_keys
   }
