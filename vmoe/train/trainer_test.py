@@ -13,6 +13,7 @@
 # limitations under the License.
 
 """Tests for trainer."""
+import os
 from unittest import mock
 
 from absl.testing import absltest
@@ -99,6 +100,60 @@ class CreateTrainStateTest(absltest.TestCase):
         jax.tree_structure(train_state_axis_resources))
     self.assertEqual(int(train_state.step), 0)
     self.assertEqual(set(train_state.rngs.keys()), {'foo'})
+
+
+class CreateOrReuseTrainStateTest(parameterized.TestCase):
+
+  def setUp(self):
+    super().setUp()
+    if jax.devices()[0].platform not in ('gpu', 'tpu'):
+      self.skipTest(
+          'CreateOrReuseTrainStateTest can only be tested on GPU or TPUs.')
+
+  @parameterized.named_parameters(
+      ('_replicated', PartitionSpec()),
+      ('_partitioned', PartitionSpec('a',)),
+  )
+  def test(self, partition_spec):
+    # Parameter 'foo' is created, 'bar' is reused.
+    devices = np.asarray(jax.local_devices())
+    mesh = Mesh(devices=devices, axis_names=('a',))
+    rngs = {'params': jax.random.PRNGKey(0)}
+    apply_fn = lambda x: x
+    optimizer_tx = trainer.optimizer.optax.identity()
+
+    train_state = trainer.TrainState(
+        step=3 * np.ones((), dtype=np.int32),
+        apply_fn=apply_fn,  # Unused.
+        params={
+            'foo': np.array([], dtype=np.float32),
+            'bar': np.zeros((devices.size * 8, 2), dtype=np.float32),
+        },
+        tx=optimizer_tx,  # Unused.
+        opt_state=optimizer_tx.init(None),  # Unused.
+        rngs={})  # Unused.
+    train_state_axis_resources = train_state.replace(
+        step=PartitionSpec(),
+        params={'foo': partition_spec, 'bar': partition_spec})
+
+    def initialize_fn(_):
+      params = {
+          'foo': 1 * jnp.ones((devices.size * 4, 3), dtype=np.float32),
+          'bar': 2 * jnp.ones((devices.size * 8, 2), dtype=np.float32),
+      }
+      return trainer.TrainState.create(
+          apply_fn=apply_fn, params=params, tx=optimizer_tx, rngs={})
+
+    train_state = trainer.create_or_reuse_train_state(
+        initialize_fn=initialize_fn, axis_resources=train_state_axis_resources,
+        rngs=rngs, reuse_train_state=train_state, mesh=mesh)
+    chex.assert_trees_all_equal(train_state.step, 3)
+    chex.assert_trees_all_equal(
+        train_state.params,
+        {
+            'foo': np.ones((devices.size * 4, 3), dtype=np.float32),
+            'bar': np.zeros((devices.size * 8, 2), dtype=np.float32),
+        })
 
 
 class GetLossTest(parameterized.TestCase):
@@ -279,6 +334,93 @@ class MixupTest(parameterized.TestCase):
           tree=np.asarray([1, 2, 3]),
           concentration=1,
           shape=(2,))
+
+
+class RestoreOrCreateTrainStateTest(absltest.TestCase):
+
+  def setUp(self):
+    super().setUp()
+    apply_fn = lambda x: x
+    optimizer_tx = trainer.optimizer.optax.identity()
+    def initialize_fn(rngs):
+      return trainer.TrainState.create(
+          apply_fn=apply_fn,
+          params={'a': 1 * jnp.ones((5,)), 'b': 2 * jnp.ones((10,))},
+          tx=optimizer_tx,
+          rngs=rngs)
+    self.rngs = {'params': jax.random.PRNGKey(0)}
+    self.initialize_fn = initialize_fn
+    self.axis_resources = jax.tree_map(
+        lambda _: PartitionSpec(), jax.eval_shape(initialize_fn, self.rngs))
+    self.mesh = Mesh(np.asarray(jax.devices()), ('a',))
+
+  def test_create_from_scratch(self):
+    prefix = os.path.join(self.create_tempdir().full_path, 'ckpt_1')
+    train_state = trainer.restore_or_create_train_state(
+        prefix=prefix, initialize_fn=self.initialize_fn,
+        axis_resources=self.axis_resources, rngs=self.rngs, mesh=self.mesh,
+        initialization_kwargs={})
+    chex.assert_trees_all_close(train_state.params, {
+        'a': 1 * np.ones((5,), dtype=np.float32),
+        'b': 2 * np.ones((10,), dtype=np.float32),
+    })
+    chex.assert_trees_all_equal(train_state.step, 0)
+    chex.assert_trees_all_equal(train_state.rngs,
+                                {'params': jax.random.PRNGKey(0)})
+
+  def test_continue_training(self):
+    prefix = os.path.join(self.create_tempdir().full_path, 'ckpt_1')
+    with mock.patch.object(
+        trainer.checkpoints_base,
+        'find_latest_complete_checkpoint_for_prefix',
+        return_value=prefix):
+      with mock.patch.object(trainer.checkpoints_partitioned,
+                             'restore_checkpoint') as mock_restore_checkpoint:
+        mock_restore_checkpoint.return_value = self.axis_resources.replace(
+            step=3 * np.ones((), dtype=np.int32),
+            params={
+                'a': 3 * np.ones((5,), dtype=np.float32),
+                'b': 4 * np.ones((10,), dtype=np.float32),
+            },
+            rngs={'params': jax.random.PRNGKey(5)})
+        train_state = trainer.restore_or_create_train_state(
+            prefix=prefix, initialize_fn=self.initialize_fn,
+            axis_resources=self.axis_resources, rngs=self.rngs, mesh=self.mesh,
+            initialization_kwargs={})
+    chex.assert_trees_all_close(train_state.params, {
+        'a': 3 * np.ones((5,), dtype=np.float32),
+        'b': 4 * np.ones((10,), dtype=np.float32),
+    })
+    chex.assert_trees_all_equal(train_state.step, 3)
+    chex.assert_trees_all_equal(train_state.rngs,
+                                {'params': jax.random.PRNGKey(5)})
+
+  def test_initialize_from_checkpoint(self):
+    prefix = os.path.join(self.create_tempdir().full_path, 'ckpt_1')
+
+    def mock_initialize_train_state_from_checkpoint(train_state, **_):
+      return train_state.replace(
+          step=jax.ShapeDtypeStruct(shape=(), dtype=jnp.int32),
+          params={
+              'a': train_state.params['a'],
+              'b': 5 * np.ones_like(train_state.params['b']),
+          },
+          rngs={'params': jax.random.PRNGKey(9)})
+
+    with mock.patch.object(
+        trainer, 'initialize_train_state_from_checkpoint',
+        side_effect=mock_initialize_train_state_from_checkpoint):
+      train_state = trainer.restore_or_create_train_state(
+          prefix=prefix, initialize_fn=self.initialize_fn,
+          axis_resources=self.axis_resources, rngs=self.rngs, mesh=self.mesh,
+          initialization_kwargs={'foo': 'bar'})
+    chex.assert_trees_all_close(train_state.params, {
+        'a': 1 * np.ones((5,), dtype=np.float32),
+        'b': 5 * np.ones((10,), dtype=np.float32),
+    })
+    chex.assert_trees_all_equal(train_state.step, 0)
+    chex.assert_trees_all_equal(train_state.rngs,
+                                {'params': jax.random.PRNGKey(9)})
 
 
 class TrainAndEvaluateTest(parameterized.TestCase):

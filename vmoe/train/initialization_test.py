@@ -147,15 +147,12 @@ class InitializeFromVitTest(absltest.TestCase):
             },
         },
     })
-    self.axis_resources = jax.tree_map(lambda _: pjit.PartitionSpec(),
-                                       self.params)
 
   def test_success(self):
     with self.assertLogs() as logs:
       with maps.Mesh(np.asarray(jax.local_devices()), ('d',)):
         params = initialization.initialize_from_vit(
             params=self.params,
-            axis_resources=self.axis_resources,
             filepath='/foo/bar/checkpoint.npz',
             mapping=[('(foo)/A', r'\1/a'), ('(foo)/B', r'\1/b')],
             keep=['.*/C'],
@@ -178,7 +175,6 @@ class InitializeFromVitTest(absltest.TestCase):
     with self.assertRaisesRegex(KeyError, "Parameter 'foo/C' .* not found"):
       initialization.initialize_from_vit(
           params=self.params,
-          axis_resources=self.axis_resources,
           filepath='/foo/bar/checkpoint.npz',
           mapping=[('(foo)/A', r'\1/a'), ('(foo)/B', r'\1/b')],
           keep=[],
@@ -189,7 +185,6 @@ class InitializeFromVitTest(absltest.TestCase):
                                 "Parameter 'foo/B' .* not compatible"):
       initialization.initialize_from_vit(
           params=self.params,
-          axis_resources=self.axis_resources,
           filepath='/foo/bar/checkpoint.npz',
           mapping=[('(foo)/A', r'\1/a'), ('(foo)/B', r'\1/b')],
           keep=['.*/C'],

@@ -21,7 +21,6 @@ from absl import logging
 import flax.core
 import flax.traverse_util
 from jax.experimental import maps
-from jax.experimental import pjit
 import numpy as np
 import scipy.ndimage
 from vit_jax import checkpoint as vit_jax_checkpoint
@@ -128,6 +127,7 @@ def initialize_from_vmoe_release(
       raise ValueError(f'Parameter {key!r} was mapped to {ckpt_key!r}, but '
                        f'their shapes are not equal: {value.shape} vs '
                        f'{ckpt_value.shape}.')
+    params_flat[key_tuple] = params_flat[key_tuple].astype(str(value.dtype))
   ckpt_params_unused = set(ckpt_params_flat.keys()) - ckpt_params_used
   if ckpt_params_unused:
     logging.info('The following parameters were found in the checkpoint but '
@@ -137,26 +137,22 @@ def initialize_from_vmoe_release(
   del ckpt_params, ckpt_params_flat, params_flat
   if is_frozen_dict:
     params = flax.core.freeze(params)
-  return _pjit_donate_to_device(params, axis_resources, mesh)
+  return params
 
 
 def initialize_from_vit(
     *,
     params: PyTree,
-    axis_resources: PyTree,
     filepath: str,
     mapping: Sequence[Tuple[str, str]] = (),
     keep: Sequence[str] = (),
     broadcast: Sequence[str] = (),
-    mesh: Optional[maps.Mesh] = None,
 ) -> PyTree:
   """Initializes parameters from a VisionTransformer checkpoint.
 
   Args:
     params: PyTree of parameters to initialize. This should not be used again
       once this function returns. Use the returned object instead.
-    axis_resources: PyTree of the same structure as params, indicating how the
-      arrays in `params` are partitioned across the logical mesh of devices.
     filepath: Filepath of the checkpoint to use for initialization.
     mapping: A sequence of pairs (regular expression, replacement) denoting
       how to replace the names of the parameters in `params` with the names of
@@ -169,9 +165,6 @@ def initialize_from_vit(
       `params` matches any of these, and the shape does not match with that of
       the checkpoint, we'll try to broadcast from the checkpoint shape to the
       new shape before raising an exception.
-    mesh: Logical mesh of devices used to run the model. This is used to copy
-      the restored parameters to devices. If None, the current active mesh will
-      be used.
 
   Raises:
     KeyError: If a parameter name does not exist in the checkpoint, and it
@@ -218,7 +211,7 @@ def initialize_from_vit(
     # current use case, we only partition the axis corresponding to the experts,
     # which does not exist in the VisionTransformer checkpoints.
     if value.shape == ckpt_value.shape:
-      params_flat[key_tuple] = np.asarray(ckpt_value).astype(str(value.dtype))
+      params_flat[key_tuple] = np.asarray(ckpt_value)
     elif key.endswith('/posembed_input/pos_embedding'):
       params_flat[key_tuple] = _zoom_position_embedding(
           ckpt_value, value)
@@ -229,6 +222,8 @@ def initialize_from_vit(
       raise ValueError(f'Parameter {key!r} was mapped to {ckpt_key!r}, but '
                        f'it is not broadcastable or their shapes are not '
                        f'compatible: {value.shape} vs {ckpt_value.shape}.')
+    # Set expected type for the parameter.
+    params_flat[key_tuple] = params_flat[key_tuple].astype(str(value.dtype))
   ckpt_params_unused = set(ckpt_params_flat.keys()) - ckpt_params_used
   if ckpt_params_unused:
     logging.info('The following parameters were found in the checkpoint but '
@@ -238,7 +233,7 @@ def initialize_from_vit(
   del ckpt_params, ckpt_params_flat, params_flat
   if is_frozen_dict:
     params = flax.core.freeze(params)
-  return _pjit_donate_to_device(params, axis_resources, mesh)
+  return params
 
 
 def _is_broadcastable(shape1: Tuple[int, ...], shape2: Tuple[int, ...]) -> bool:
@@ -256,16 +251,6 @@ def _map_name(name: str, map_regexes: Sequence[Tuple[re.Pattern, str]]) -> str:
     if n > 0:
       return new_name
   return name
-
-
-def _pjit_donate_to_device(data, axis_resources, mesh):
-  mesh = mesh or maps.thread_resources.env.physical_mesh
-  with maps.Mesh(mesh.devices, mesh.axis_names):
-    return pjit.pjit(
-        fun=lambda x: x,
-        in_axis_resources=(axis_resources,),
-        out_axis_resources=axis_resources,
-        donate_argnums=(0,))(data)
 
 
 def _zoom_position_embedding(source, target):

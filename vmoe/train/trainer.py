@@ -70,6 +70,11 @@ TrainStepFn = train_state_module.TrainStepFn
 
 _getattr = getattr  # Alias of _getattr so that we can mock it in tests.
 
+# pylint: disable=protected-access
+_PositionalSemantics = maps._PositionalSemantics
+_prepare_axis_resources = pjit._prepare_axis_resources
+# pylint: enable=protected-access
+
 
 def create_checkpoint_hook(*, workdir: str, progress_hook: ReportProgress,
                            train_state_axis_resources: TrainStateAxisResources,
@@ -202,7 +207,7 @@ def create_train_state(
     initialize_fn: Function used to create and initialize a train state from
       scratch.
     axis_resources: A PyTree with the same structure as a TrainState, but with
-      PartitionSpec leaves.
+      PartitionSpec leaves, indicating how the output TrainState is partitioned.
     rngs: Dictionary of PRNGs to use during model initialization.
     mesh: Logical mesh used by pjit. If None, uses the currently active mesh.
 
@@ -211,11 +216,63 @@ def create_train_state(
   """
   mesh = mesh or maps.thread_resources.env.physical_mesh
   with maps.Mesh(mesh.devices, mesh.axis_names):
-    train_state = pjit.pjit(
+    return pjit.pjit(
         initialize_fn,
         in_axis_resources=(None,),
         out_axis_resources=axis_resources)(rngs)
-  return train_state
+
+
+def create_or_reuse_train_state(
+    *,
+    initialize_fn: TrainStateInitFromScratchFn,
+    axis_resources: TrainStateAxisResources,
+    rngs: Mapping[str, PRNGKey],
+    reuse_train_state: TrainState,
+    mesh: Optional[Mesh] = None,
+) -> TrainState:
+  """Creates a TrainState object initialized from scratch, re-using some parts.
+
+  Args:
+    initialize_fn: Function used to create and initialize a train state from
+      scratch.
+    axis_resources: A PyTree with the same structure as a TrainState, but with
+      PartitionSpec leaves, indicating how the output TrainState is partitioned.
+    rngs: Dictionary of PRNGs to use during model initialization.
+    reuse_train_state: TrainState containing the arrays to re-use. All arrays
+      with a size other than 0 are re-used.
+    mesh: Logical mesh used by pjit. If None, uses the currently active mesh.
+
+  Returns:
+    A TrainState.
+  """
+  mesh = mesh or maps.thread_resources.env.physical_mesh
+  out_axis_resources = axis_resources
+  # Replace ShapeDtypeStruct objects with Numpy arrays of size 0.
+  # pylint: disable=g-long-lambda
+  reuse_train_state = jax.tree_map(
+      lambda x: np.array([], dtype=x.dtype)
+      if isinstance(x, jax.ShapeDtypeStruct) else np.asarray(x),
+      reuse_train_state)
+  # pylint: enable=g-long-lambda
+  # Replace PartitionSpec of arrays with size = 0. These are not partitioned.
+  in_axis_resources = jax.tree_map(
+      lambda x, r: pjit.PartitionSpec() if x.size == 0 else r,
+      reuse_train_state, axis_resources)
+  # Wrap the given initialize_fn with a new one that selects the arrays in the
+  # reuse_train_state or newly created arrays based on the size of the first.
+  # We leverage the fact that XLA will remove unused variables/ops when this
+  # new initialize function is compiled.
+  def initialize(reuse_train_state: TrainState, rngs: Mapping[str, PRNGKey]):
+    train_state = initialize_fn(rngs)
+    return jax.tree_map(
+        lambda a, b: b if a.size == 0 else a, reuse_train_state, train_state)
+
+  with maps.Mesh(mesh.devices, mesh.axis_names):
+    return pjit.pjit(
+        initialize,
+        in_axis_resources=(in_axis_resources, None),
+        out_axis_resources=out_axis_resources,
+        donate_argnums=(0,))(reuse_train_state, rngs)
 
 
 def create_train_state_initialize_from_scratch_fn(
@@ -260,6 +317,7 @@ def restore_or_create_train_state(
     rngs: Mapping[str, PRNGKey],
     mesh: Optional[Mesh] = None,
     thread_pool: Optional[ThreadPool] = None,
+    initialization_kwargs: Optional[Mapping[str, Any]] = None,
 ) -> TrainState:
   """Restores a TrainState from the latest complete checkpoint or creates one.
 
@@ -274,6 +332,8 @@ def restore_or_create_train_state(
     rngs: Dictionary of PRNGs to use during model initialization.
     mesh: Logical mesh used by pjit. If None, uses the currently active mesh.
     thread_pool: Thread pool used to restore checkpoints.
+    initialization_kwargs: Optional dictionary containing the kwargs used to
+      initialize the TrainState from an existing checkpoint.
 
   Returns:
     A TrainState.
@@ -294,9 +354,22 @@ def restore_or_create_train_state(
       return pjit.pjit(
           fun=lambda x: x,
           in_axis_resources=(axis_resources,),
-          out_axis_resources=axis_resources)(train_state)
-  # If no complete checkpoints exist with the given prefix, create a train
-  # state from scratch on device.
+          out_axis_resources=axis_resources,
+          donate_argnums=(0,))(train_state)
+  if initialization_kwargs:
+    # Compute global shapes of the TrainState and convert them to local shapes.
+    train_state = jax.eval_shape(initialize_fn, rngs)
+    train_state = tree_global_to_local_shape(train_state, axis_resources, mesh)
+    # Initialize TrainState from checkpoint. Arrays that are not initialized,
+    # are ShapeDtypeStruct objects.
+    train_state = initialize_train_state_from_checkpoint(
+        train_state=train_state,
+        axis_resources=axis_resources,
+        **initialization_kwargs)
+    return create_or_reuse_train_state(
+        initialize_fn=initialize_fn, axis_resources=axis_resources, rngs=rngs,
+        mesh=mesh, reuse_train_state=train_state)
+  # Otherwise, create a new train state from scratch on device.
   return create_train_state(
       initialize_fn=initialize_fn, axis_resources=axis_resources, rngs=rngs,
       mesh=mesh)
@@ -397,7 +470,6 @@ def initialize_train_state_from_checkpoint(
     return train_state.replace(
         params=initialization.initialize_from_vit(
             params=train_state.params,
-            axis_resources=axis_resources.params,
             **kwargs))
   else:
     raise ValueError(f'Unknown initialization method: {name!r}')
@@ -572,13 +644,9 @@ def _train_and_evaluate(config: ml_collections.ConfigDict, workdir: str,
       initialize_fn=train_state_initialize_fn,
       axis_resources=train_state_axis_resources,
       rngs=train_state_rngs,
-      thread_pool=ThreadPool())
+      thread_pool=ThreadPool(),
+      initialization_kwargs=config.get('initialization'))
   init_step = int(train_state.step)
-  if init_step == 0 and config.get('initialization'):
-    train_state = initialize_train_state_from_checkpoint(
-        train_state=train_state,
-        axis_resources=train_state_axis_resources,
-        **config.initialization)
 
   train_loss_fn, eval_loss_fn, label_pred_fn = get_loss_fn(**config.loss)
   train_step_fn = functools.partial(train_step, loss_fn=train_loss_fn)
@@ -673,6 +741,28 @@ def _train_and_evaluate(config: ml_collections.ConfigDict, workdir: str,
       thread_pool=config.get('save_checkpoint', {}).get('num_threads')).wait()
   multihost_utils.sync_devices('checkpoints:release')
   logging.info('Training completed.')
+
+
+def tree_global_to_local_shape(tree, axis_resources, mesh):
+  """Maps a tree from global to local shapes."""
+  # Note: This requires some low-level understanding about pjit. Replace this
+  # if we switch to Global Device Array (GDA) in the future.
+  # See more information in checkpoints/partitioned.py.
+  leaves, struct_tree = jax.tree_flatten(tree)
+  _, axis_resources, struct_axis_resources, _ = _prepare_axis_resources(
+      axis_resources, 'axis_resources')
+  if struct_tree != struct_axis_resources:
+    raise ValueError(f'The tree structs do not match.\n'
+                     f'index: {struct_tree}\n'
+                     f'axis_resources: {struct_axis_resources}')
+  global_shapes = [x.shape for x in leaves]
+  positional_semantics = [_PositionalSemantics.LOCAL for _ in global_shapes]
+  local_shapes = pjit.global_to_local(positional_semantics, mesh, global_shapes,
+                                      axis_resources)
+  return struct_tree.unflatten([
+      jax.ShapeDtypeStruct(shape=s, dtype=x.dtype)
+      for x, s in zip(leaves, local_shapes)
+  ])
 
 
 def wrap_train_step_with_mixup(
