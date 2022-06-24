@@ -32,6 +32,7 @@ PartitionSpec = partitioned.PartitionSpec
 Slice = partitioned.Slice
 SliceNd = partitioned.SliceNd
 SliceNdArray = partitioned.SliceNdArray
+Version = partitioned.Version
 
 
 class MakeSliceNdArrayTest(absltest.TestCase):
@@ -265,9 +266,15 @@ class RestoreArrayChunks(parameterized.TestCase):
 
 
 class RestoreAndSaveCheckpointTest(parameterized.TestCase):
+  # Note: when restoring a checkpoint from an UNKNOWN version, we require now
+  # that either the tree or the axis_resources are given. This is because the
+  # order of the leaves in jax.tree_structure(foo) might different from that in
+  # jax.tree_structure(serialization.to_state_dict(foo)), which can cause an
+  # exception or loading the wrong values in the state dict.
+  # See comment in partitioned.save_checkpoint().
 
   @parameterized.named_parameters(
-      ('process_0_of_2', 0, None,
+      ('process_0_of_2_ver_v1', 0, None,
        [[0, 0, 0, 0, 0, 1, 1, 1, 1, 1],
         [0, 0, 0, 0, 0, 1, 1, 1, 1, 1],
         [0, 0, 0, 0, 0, 1, 1, 1, 1, 1],
@@ -277,8 +284,8 @@ class RestoreAndSaveCheckpointTest(parameterized.TestCase):
         [2, 2, 2, 2, 2, 3, 3, 3, 3, 3],
         [2, 2, 2, 2, 2, 3, 3, 3, 3, 3],
         [2, 2, 2, 2, 2, 3, 3, 3, 3, 3],
-        [2, 2, 2, 2, 2, 3, 3, 3, 3, 3]]),
-      ('process_1_of_2', 1, None,
+        [2, 2, 2, 2, 2, 3, 3, 3, 3, 3]], Version.V1),
+      ('process_1_of_2_ver_v1', 1, None,
        [[0, 0, 0, 0, 0, 1, 1, 1, 1, 1],
         [0, 0, 0, 0, 0, 1, 1, 1, 1, 1],
         [0, 0, 0, 0, 0, 1, 1, 1, 1, 1],
@@ -288,32 +295,32 @@ class RestoreAndSaveCheckpointTest(parameterized.TestCase):
         [2, 2, 2, 2, 2, 3, 3, 3, 3, 3],
         [2, 2, 2, 2, 2, 3, 3, 3, 3, 3],
         [2, 2, 2, 2, 2, 3, 3, 3, 3, 3],
-        [2, 2, 2, 2, 2, 3, 3, 3, 3, 3]]),
-      ('process_0_of_2_axis_resources',
+        [2, 2, 2, 2, 2, 3, 3, 3, 3, 3]], Version.V1),
+      ('process_0_of_2_axis_resources_ver_v1',
        0, {'x': None, 'y': None, 'z': PartitionSpec('a')},
        [[0, 0, 0, 0, 0, 1, 1, 1, 1, 1],
         [0, 0, 0, 0, 0, 1, 1, 1, 1, 1],
         [0, 0, 0, 0, 0, 1, 1, 1, 1, 1],
         [0, 0, 0, 0, 0, 1, 1, 1, 1, 1],
-        [0, 0, 0, 0, 0, 1, 1, 1, 1, 1]]),
-      ('process_1_of_2_axis_resources',
+        [0, 0, 0, 0, 0, 1, 1, 1, 1, 1]], Version.V1),
+      ('process_1_of_2_axis_resources_ver_unknown',
        1, {'x': None, 'y': None, 'z': PartitionSpec('a')},
        [[2, 2, 2, 2, 2, 3, 3, 3, 3, 3],
         [2, 2, 2, 2, 2, 3, 3, 3, 3, 3],
         [2, 2, 2, 2, 2, 3, 3, 3, 3, 3],
         [2, 2, 2, 2, 2, 3, 3, 3, 3, 3],
-        [2, 2, 2, 2, 2, 3, 3, 3, 3, 3]]),
+        [2, 2, 2, 2, 2, 3, 3, 3, 3, 3]], Version.UNKNOWN),
   )
   @mock.patch.object(partitioned.jax, 'process_count', return_value=2)
   def test_restore_checkpoint(self, process_index, axis_resources, expected_z,
-                              _):
+                              version, _):
     devices = np.asarray(
         [_make_device(process_index=i // 2, id=i) for i in range(4)])
     mesh = partitioned.Mesh(devices.reshape((2, 2)), ('a', 'b'))
     prefix = self.create_tempfile().full_path
     def side_effect(filepath, *unused_args, **unused_kwargs):
       return {
-          prefix + '.index': self._get_expected_index(),
+          prefix + '.index': self._get_expected_index(version),
           prefix + '.data-00000-of-00004': self._get_expected_shard_content(0),
           prefix + '.data-00001-of-00004': self._get_expected_shard_content(1),
           prefix + '.data-00002-of-00004': self._get_expected_shard_content(2),
@@ -344,6 +351,19 @@ class RestoreAndSaveCheckpointTest(parameterized.TestCase):
                               [2, 2, 2, 2, 2]])
           np.testing.assert_array_almost_equal(restored['z'], expected_z)
 
+  def test_restore_checkpoint_no_tree_nor_axis_resources_unknown_ver(self):
+    devices = np.asarray([_make_device(process_index=0, id=0)])
+    mesh = partitioned.Mesh(devices, ('a',))
+    prefix = self.create_tempfile().full_path
+    index = self._get_expected_index(version=Version.UNKNOWN)
+    with mock.patch.object(partitioned.vmoe.checkpoints.base,
+                           'restore_checkpoint', return_value=index):
+      with self.assertRaisesRegex(
+          ValueError,
+          'You must specify the tree and/or axis_resources arguments when'):
+        partitioned.restore_checkpoint(
+            prefix=prefix, tree=None, axis_resources=None, mesh=mesh)
+
   def test_restore_checkpoint_empty_mesh(self):
     prefix = self.create_tempfile().full_path
     with self.assertRaisesRegex(ValueError, 'You must pass a non-empty mesh'):
@@ -351,16 +371,16 @@ class RestoreAndSaveCheckpointTest(parameterized.TestCase):
           prefix=prefix, tree=None, axis_resources=None)
 
   @parameterized.named_parameters(
-      ('process_0', 0, 2, 0),
-      ('process_1', 1, 1, 2),
-      ('process_2', 2, 1, 1),
-      ('process_3', 3, 1, 3),
+      ('process_0_ver_unk', 0, 2, 0, Version.UNKNOWN),
+      ('process_1_ver_unk', 1, 1, 2, Version.UNKNOWN),
+      ('process_2_ver_v1', 2, 1, 1, Version.V1),
+      ('process_3_ver_v1', 3, 1, 3, Version.V1),
   )
   @mock.patch.object(partitioned.jax, 'process_count', return_value=4)
   @mock.patch.object(
       partitioned.vmoe.multihost_utils, 'sync_devices', return_value=None)
   def test_save_checkpoint(self, process_index, num_written_files, shard,
-                           unused_1, unused_2):
+                           version, unused_1, unused_2):
     devices = np.asarray(
         [_make_device(process_index=i, id=i) for i in range(4)]).reshape((2, 2))
     mesh = partitioned.Mesh(devices, ('a', 'b'))
@@ -388,14 +408,15 @@ class RestoreAndSaveCheckpointTest(parameterized.TestCase):
       with mock.patch.object(jax._src.lib.xla_bridge, 'process_index',
                              return_value=process_index):
         async_result = partitioned.save_checkpoint(
-            prefix=prefix, tree=tree, axis_resources=axis_resources, mesh=mesh)
+            prefix=prefix, tree=tree, axis_resources=axis_resources, mesh=mesh,
+            version=version)
     written_files = async_result.get()
     # Check that the process writes the expected number of files.
     self.assertLen(written_files, num_written_files)
     # If the process writes the index, load the index and check its icontent.
     if num_written_files == 2:
       index_content = base.restore_checkpoint(prefix + '.index')
-      expected_index_content = self._get_expected_index()
+      expected_index_content = self._get_expected_index(version)
       chex.assert_trees_all_equal_comparator(
           lambda x, y: x == y,
           lambda x, y: f'IndexInfos do not match:\n{x}\n{y}',
@@ -427,8 +448,8 @@ class RestoreAndSaveCheckpointTest(parameterized.TestCase):
       return False
     return all(map(lambda x, y: (x == y).all, a, b))
 
-  def _get_expected_index(self):
-    return {
+  def _get_expected_index(self, version: Version):
+    index = {
         'shard_count': 4,
         'index': {
             'x': partitioned.IndexInfo(
@@ -449,6 +470,9 @@ class RestoreAndSaveCheckpointTest(parameterized.TestCase):
                 shards=(0, 2, 1, 3)),
         },
     }
+    if version != Version.UNKNOWN:
+      index['version'] = version.value
+    return index
 
   def _get_expected_shard_content(self, shard):
     """Returns the ArrayChunks data stored in each shard."""

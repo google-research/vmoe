@@ -14,16 +14,18 @@
 
 """Functions for checkpointing partitioned models."""
 import collections
+import enum
 import functools
 import itertools
 import os
 from typing import Any, Iterator, Iterable, Mapping, Optional, Sequence, Tuple, Union
 
 import jax
-import jax.experimental.maps as maps
-import jax.experimental.pjit as pjit
+from jax.experimental import maps
+from jax.experimental import pjit
 import numpy as np
 import vmoe.checkpoints.base
+import vmoe.checkpoints.serialization
 import vmoe.checkpoints.types
 import vmoe.multihost_utils
 import vmoe.utils
@@ -45,8 +47,15 @@ SliceNd = vmoe.checkpoints.types.SliceNd
 SliceNdArray = vmoe.checkpoints.types.SliceNdArray
 ThreadPool = vmoe.checkpoints.base.ThreadPool
 
+from_state_dict = vmoe.checkpoints.serialization.from_state_dict
+to_state_dict = vmoe.checkpoints.serialization.to_state_dict
 safe_map = vmoe.utils.safe_map
 safe_zip = vmoe.utils.safe_zip
+
+
+class Version(enum.Enum):
+  UNKNOWN = None
+  V1 = '20220622'
 
 
 def restore_checkpoint(*,
@@ -77,12 +86,55 @@ def restore_checkpoint(*,
     raise ValueError("You must pass a non-empty mesh. If you didn't pass any, "
                      "check that you called restore_checkpoint from a "
                      "maps.mesh context.")
-  index = vmoe.checkpoints.base.restore_checkpoint(prefix + '.index', {
-      'shard_count': 0,
-      'index': tree if tree is not None else axis_resources,
-  })
+  # Restore index as a state dict.
+  index = vmoe.checkpoints.base.restore_checkpoint(prefix + '.index')
+  version = Version(index.get('version', Version.UNKNOWN))
   shard_count = index['shard_count']
   index = index['index']
+  if version == Version.UNKNOWN:
+    if tree is None and axis_resources is None:
+      raise ValueError(
+          'You must specify the tree and/or axis_resources arguments when '
+          f'restoring checkpoints from {Version.UNKNOWN}.')
+
+    # The index has the same structure as the input tree and the axis_resources.
+    # Obtain such structure before calling _restore_checkpoint.
+    index = from_state_dict(target=tree or axis_resources, state=index)
+    return _restore_checkpoint_from_index(
+        prefix=prefix,
+        shard_count=shard_count,
+        index=index,
+        axis_resources=axis_resources,
+        mesh=mesh,
+        thread_pool=thread_pool)
+  if version == Version.V1:
+    if axis_resources is None:
+      axis_resources_state_dict = None
+    else:
+      axis_resources_state_dict = to_state_dict(axis_resources)
+    state_dict = _restore_checkpoint_from_index(
+        prefix=prefix,
+        shard_count=shard_count,
+        index=index,
+        axis_resources=axis_resources_state_dict,
+        mesh=mesh,
+        thread_pool=thread_pool)
+    if (tree or axis_resources) is not None:
+      return from_state_dict(target=tree or axis_resources, state=state_dict)
+    else:
+      return state_dict
+  raise ValueError(f'Unsupported checkpoint version: {version!r}')
+
+
+def _restore_checkpoint_from_index(
+    *,
+    prefix: str,
+    shard_count: int,
+    index: PyTree,
+    axis_resources: Optional[PyTree],
+    mesh: Mesh,
+    thread_pool: Optional[ThreadPool] = None) -> PyTree:
+  """Restores a PyTree of partitioned arrays from an index."""
   # axis_resources indicates how the data to be loaded will be partitioned.
   # If no axis_resources is given, assume that we don't want any partitioning.
   # This implies that all devices will store a copy of all the parameters, thus
@@ -158,7 +210,8 @@ def save_checkpoint(*,
                     num_shards: int = 0,
                     overwrite: bool = True,
                     makedirs: bool = True,
-                    thread_pool: Optional[ThreadPool] = None) -> AsyncResult:
+                    thread_pool: Optional[ThreadPool] = None,
+                    version: Version = Version.V1) -> AsyncResult:
   """Saves a PyTree of partitioned arrays into a sharded checkpoint.
 
   Args:
@@ -177,19 +230,32 @@ def save_checkpoint(*,
       If False, the existence of the base dir is assumed.
     thread_pool: ThreadPool used to write the checkpoint files asynchronously.
       If None, a new pool will be created.
+    version: Write checkpoints using this version. DO NOT CHANGE UNLESS YOU KNOW
+      WHAT YOU ARE DOING.
 
   Returns:
     An AsyncResult object.
   """
+  # We convert the tree (and axis_resource) to a pure nested dictionary here.
+  # Before Version.V1, this was done implicitly in the subsequent calls to the
+  # function base.save_checkpoint(). However, the leaves of the PyTree were
+  # given by jax.tree_leaves(tree), which may give a different order than
+  # jax.tree_leaves(to_state_dict(tree)). When this happened, this prevented us
+  # to restore the checkpoint without passing any tree/axis_resources. Yet, this
+  # is a useful feature if we want to restore the checkpoint as a pure Python
+  # dictionary (i.e. a Flax state dict), when we don't know the original
+  # structure of the PyTree in the checkpoint.
+  if version is not Version.UNKNOWN:
+    tree = to_state_dict(tree)
+    axis_resources = to_state_dict(axis_resources)
   if mesh is None:
     mesh = _get_current_mesh()
   if mesh.empty:
     raise ValueError("You must pass a non-empty mesh. If you didn't pass any, "
                      "check that you called save_checkpoint from a maps.mesh "
                      "context.")
-  filepath_map = _make_save_checkpoint_filepath_map(prefix, tree,
-                                                    axis_resources, mesh,
-                                                    num_shards)
+  filepath_map = _make_save_checkpoint_filepath_map(
+      prefix, tree, axis_resources, mesh, num_shards, version)
   if makedirs:
     # Process 0 creates the workdir if it doesn't exist. All processes wait
     # until it's done.
@@ -309,7 +375,7 @@ def _intersect_slice_nd(
 
 def _make_save_checkpoint_filepath_map(
     prefix: str, tree: PyTree, axis_resources: PyTree, mesh: Mesh,
-    num_shards: int = 0):
+    num_shards: int = 0, version: Version = Version.V1):
   """Makes a dictionary of filepaths mapping to the content that must be serialized."""
   filepath_map = {}  # Result.
   tree_leaves, struct = jax.tree_flatten(tree)
@@ -373,6 +439,8 @@ def _make_save_checkpoint_filepath_map(
         'shard_count': shard_count,
         'index': struct.unflatten(index_leaves),
     }
+    if version is not Version.UNKNOWN:
+      filepath_map[prefix + '.index']['version'] = version.value
   # Assign the LazyArrayChunks objects to the corresponding shard filepaths.
   shard_fpath_fn = functools.partial(
       vmoe.checkpoints.base.add_shard_suffix,
