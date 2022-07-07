@@ -23,6 +23,7 @@ from typing import Any, Iterator, Iterable, Mapping, Optional, Sequence, Tuple, 
 import jax
 from jax.experimental import maps
 from jax.experimental import pjit
+from jax.experimental import sharding
 import numpy as np
 import vmoe.checkpoints.base
 import vmoe.checkpoints.serialization
@@ -39,6 +40,7 @@ AsyncResult = vmoe.checkpoints.base.AsyncResult
 IndexInfo = vmoe.checkpoints.types.IndexInfo
 LazyArrayChunks = vmoe.checkpoints.types.LazyArrayChunks
 Mesh = maps.Mesh
+MeshPspecSharding = sharding.MeshPspecSharding
 ParsedPartitionSpec = pjit.ParsedPartitionSpec
 PartitionSpec = pjit.PartitionSpec
 PyTree = Any
@@ -143,8 +145,7 @@ def _restore_checkpoint_from_index(
     axis_resources = jax.tree_map(lambda _: PartitionSpec(), index)
   # Flatten index and axis_resources. Check that the two are compatible.
   index, struct = jax.tree_flatten(index)
-  _, axis_resources, struct2, _ = _prepare_axis_resources(
-      axis_resources, 'axis_resources')
+  axis_resources, struct2 = jax.tree_flatten(axis_resources)
   if struct != struct2:
     raise ValueError(f'The tree structs do not match.\n'
                      f'index: {struct}\n'
@@ -153,8 +154,9 @@ def _restore_checkpoint_from_index(
   # This indicates the shape and type of all the arrays in the tree to restore.
   global_avals = [x.global_shape for x in index]
   positional_semantics = [_PositionalSemantics.LOCAL for _ in global_avals]
-  local_avals = pjit.global_to_local(positional_semantics, mesh, global_avals,
-                                     axis_resources)
+  shardings = [MeshPspecSharding(mesh, spec) for spec in axis_resources]
+  local_avals = pjit.global_to_local(positional_semantics, global_avals,
+                                     shardings)
   local_mesh = mesh.local_mesh
   # For each array to restore, get local/global SliceNdArrays indicating which
   # local/global slice is stored in each device of the local/global mesh.
@@ -379,8 +381,7 @@ def _make_save_checkpoint_filepath_map(
   """Makes a dictionary of filepaths mapping to the content that must be serialized."""
   filepath_map = {}  # Result.
   tree_leaves, struct = jax.tree_flatten(tree)
-  _, axis_resources, struct2, _ = _prepare_axis_resources(
-      axis_resources, 'axis_resources')
+  axis_resources, struct2 = jax.tree_flatten(axis_resources)
   if struct != struct2:
     raise ValueError('The tree structs do not match.\n'
                      f'tree: {struct}\n'
@@ -392,8 +393,9 @@ def _make_save_checkpoint_filepath_map(
       for x in tree_leaves
   ]
   positional_semantics = [_PositionalSemantics.LOCAL for _ in local_avals]
-  global_avals = pjit.local_to_global(positional_semantics, mesh, local_avals,
-                                      axis_resources)
+  shardings = [MeshPspecSharding(mesh, spec) for spec in axis_resources]
+  global_avals = pjit.local_to_global(positional_semantics, local_avals,
+                                      shardings)
   local_mesh = mesh.local_mesh
   # For each input array, get local/global SliceNdArrays indicating which
   # local/global slice is stored in each device of the local/global mesh.

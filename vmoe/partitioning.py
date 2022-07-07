@@ -70,11 +70,13 @@ import flax.traverse_util
 import jax
 from jax.experimental import maps
 from jax.experimental import pjit
+from jax.experimental import sharding
 import numpy as np
 
 AxisResourcesRegexes = Sequence[Tuple[str, 'UnparsedPartitionSpec']]
 Device = jax.lib.xla_client.Device
 Mesh = maps.Mesh
+MeshPspecSharding = sharding.MeshPspecSharding
 PartitionSpec = pjit.PartitionSpec
 PyTree = Any
 TpuCoords = Tuple[int, int, int, int]
@@ -411,12 +413,12 @@ def tree_global_shape(tree: PyTree, axis_resources: PyTree,
   """Returns a PyTree of ShapedArray leaves with the global shape of the arrays in the input tree."""
   tree_leaves, struct = jax.tree_flatten(tree)
   # pylint: disable=protected-access
-  _, axis_resources_leaves, struct2, _ = pjit._prepare_axis_resources(
-      axis_resources, 'axis_resources')
+  axis_resources_leaves, struct2 = jax.tree_flatten(axis_resources)
   if struct != struct2:
     raise ValueError(f'The tree structs do not match.\n'
                      f'tree: {struct}\n'
                      f'resource_axis: {struct2}')
+  shardings = [MeshPspecSharding(mesh, spec) for spec in axis_resources_leaves]
   if not all(
       hasattr(x, 'aval') or (hasattr(x, 'shape') and hasattr(x, 'dtype'))
       for x in tree_leaves):
@@ -429,7 +431,7 @@ def tree_global_shape(tree: PyTree, axis_resources: PyTree,
   ]
   positional_semantics = [maps._PositionalSemantics.LOCAL for _ in tree_leaves]
   global_aval_leaves = pjit.local_to_global(
-      positional_semantics, mesh, tree_leaves, axis_resources_leaves)
+      positional_semantics, tree_leaves, shardings)
   return jax.tree_unflatten(struct, global_aval_leaves)
   # pylint: enable=protected-access
 

@@ -297,14 +297,14 @@ class RestoreAndSaveCheckpointTest(parameterized.TestCase):
         [2, 2, 2, 2, 2, 3, 3, 3, 3, 3],
         [2, 2, 2, 2, 2, 3, 3, 3, 3, 3]], Version.V1),
       ('process_0_of_2_axis_resources_ver_v1',
-       0, {'x': None, 'y': None, 'z': PartitionSpec('a')},
+       0, {'x': PartitionSpec(), 'y': PartitionSpec(), 'z': PartitionSpec('a')},
        [[0, 0, 0, 0, 0, 1, 1, 1, 1, 1],
         [0, 0, 0, 0, 0, 1, 1, 1, 1, 1],
         [0, 0, 0, 0, 0, 1, 1, 1, 1, 1],
         [0, 0, 0, 0, 0, 1, 1, 1, 1, 1],
         [0, 0, 0, 0, 0, 1, 1, 1, 1, 1]], Version.V1),
       ('process_1_of_2_axis_resources_ver_unknown',
-       1, {'x': None, 'y': None, 'z': PartitionSpec('a')},
+       1, {'x': PartitionSpec(), 'y': PartitionSpec(), 'z': PartitionSpec('a')},
        [[2, 2, 2, 2, 2, 3, 3, 3, 3, 3],
         [2, 2, 2, 2, 2, 3, 3, 3, 3, 3],
         [2, 2, 2, 2, 2, 3, 3, 3, 3, 3],
@@ -397,7 +397,7 @@ class RestoreAndSaveCheckpointTest(parameterized.TestCase):
         'z': np.ones((5, 5), dtype=np.float32) * process_index,
     }
     axis_resources = {
-        'x': None,
+        'x': PartitionSpec(),
         'y': PartitionSpec('a'),
         'z': PartitionSpec('a', 'b'),
     }

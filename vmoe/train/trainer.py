@@ -30,6 +30,7 @@ import flax.traverse_util
 import jax
 from jax.experimental import maps
 from jax.experimental import pjit
+from jax.experimental import sharding
 import jax.numpy as jnp
 import ml_collections
 import numpy as np
@@ -55,6 +56,7 @@ Array = jax.numpy.ndarray
 AsyncResult = multiprocessing.pool.AsyncResult
 Dataset = input_pipeline.tf.data.Dataset
 Mesh = partitioning.Mesh
+MeshPspecSharding = sharding.MeshPspecSharding
 PartitionSpec = partitioning.PartitionSpec
 PeriodicCheckpointSaver = checkpoints_periodic_actions.PeriodicSaveCheckpoint
 PRNGKey = Union[jax.numpy.ndarray, jax.random.KeyArray]
@@ -749,16 +751,16 @@ def tree_global_to_local_shape(tree, axis_resources, mesh):
   # if we switch to Global Device Array (GDA) in the future.
   # See more information in checkpoints/partitioned.py.
   leaves, struct_tree = jax.tree_flatten(tree)
-  _, axis_resources, struct_axis_resources, _ = _prepare_axis_resources(
-      axis_resources, 'axis_resources')
+  axis_resources, struct_axis_resources = jax.tree_flatten(axis_resources)
   if struct_tree != struct_axis_resources:
     raise ValueError(f'The tree structs do not match.\n'
                      f'index: {struct_tree}\n'
                      f'axis_resources: {struct_axis_resources}')
   global_shapes = [x.shape for x in leaves]
   positional_semantics = [_PositionalSemantics.LOCAL for _ in global_shapes]
-  local_shapes = pjit.global_to_local(positional_semantics, mesh, global_shapes,
-                                      axis_resources)
+  shardings = [MeshPspecSharding(mesh, spec) for spec in axis_resources]
+  local_shapes = pjit.global_to_local(positional_semantics, global_shapes,
+                                      shardings)
   return struct_tree.unflatten([
       jax.ShapeDtypeStruct(shape=s, dtype=x.dtype)
       for x, s in zip(leaves, local_shapes)

@@ -382,7 +382,7 @@ def _make_tree_axis_resources_mesh_test_data():
   axis_resources = {
       # Array 'v' is not partitioned, each device holds a replica of this.
       # Thus, the global shape is (5, 5).
-      'v': None,
+      'v': PartitionSpec(),
       # Array 'w' has its first axis partitioned in 4 chunks across the
       # axis 'a' of the logical mesh. Thus, its global shape is (4 * 5, 5).
       'w': PartitionSpec('a'),
