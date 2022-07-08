@@ -160,10 +160,11 @@ def _restore_checkpoint_from_index(
   local_mesh = mesh.local_mesh
   # For each array to restore, get local/global SliceNdArrays indicating which
   # local/global slice is stored in each device of the local/global mesh.
-  local_slices_arrays = _make_slice_nd_arrays(local_avals, axis_resources,
-                                              local_mesh)
-  global_slices_arrays = _make_slice_nd_arrays(global_avals, axis_resources,
-                                               mesh)
+  parsed_axis_resources = [spec._parsed_pspec for spec in shardings]  # pylint: disable=protected-access
+  local_slices_arrays = _make_slice_nd_arrays(
+      local_avals, parsed_axis_resources, local_mesh)
+  global_slices_arrays = _make_slice_nd_arrays(
+      global_avals, parsed_axis_resources, mesh)
   # For each array to restore: get a set of (local slice, global slice) that
   # will be handled by the devices of the current process.
   local_global_slices = _pair_local_and_global_slices(
@@ -275,7 +276,6 @@ def save_checkpoint(*,
 
 # pylint: disable=protected-access
 _PositionalSemantics = maps._PositionalSemantics
-_prepare_axis_resources = pjit._prepare_axis_resources
 # pylint: enable=protected-access
 
 
@@ -399,10 +399,11 @@ def _make_save_checkpoint_filepath_map(
   local_mesh = mesh.local_mesh
   # For each input array, get local/global SliceNdArrays indicating which
   # local/global slice is stored in each device of the local/global mesh.
-  local_slices_arrays = _make_slice_nd_arrays(local_avals, axis_resources,
-                                              local_mesh)
-  global_slices_arrays = _make_slice_nd_arrays(global_avals, axis_resources,
-                                               mesh)
+  parsed_axis_resources = [spec._parsed_pspec for spec in shardings]  # pylint: disable=protected-access
+  local_slices_arrays = _make_slice_nd_arrays(
+      local_avals, parsed_axis_resources, local_mesh)
+  global_slices_arrays = _make_slice_nd_arrays(
+      global_avals, parsed_axis_resources, mesh)
   # `shard_per_global_slices` contains, for each input array, a sequence of
   # integers indicating which shard must write each of the global slices of the
   # corresponding array. Its size is that of the number of different slices of
