@@ -19,8 +19,9 @@ import flax.linen as nn
 import jax.numpy as jnp
 from vit_jax import models_vit
 import vmoe.moe
-import vmoe.nn.routing
+from vmoe.nn import routing
 import vmoe.utils
+
 
 Array = jnp.ndarray
 PRNGKey = jnp.ndarray
@@ -80,7 +81,7 @@ class MlpMoeBlock(nn.Module):
                                                        self.deterministic)
     # Create instance of the router class.
     router_cls = router_kwargs.pop('name', 'NoisyTopExpertsPerItemRouter')
-    router_cls = getattr(vmoe.nn.routing, router_cls)
+    router_cls = getattr(routing, router_cls)
     return router_cls(dtype=self.dtype, name='Router', **router_kwargs)
 
   @nn.nowrap
