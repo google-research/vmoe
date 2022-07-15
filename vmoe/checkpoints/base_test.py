@@ -88,13 +88,13 @@ class CheckpointsBaseTest(parameterized.TestCase):
     # Restore checkpoints without specifying the tree structure.
     restored_filepath_tree_map = base.restore_multiple_checkpoints(
         {key: None for key in filepath_tree_map})
-    jax.tree_multimap(np.testing.assert_array_equal, restored_filepath_tree_map,
-                      filepath_tree_map)
+    jax.tree_map(np.testing.assert_array_equal, restored_filepath_tree_map,
+                 filepath_tree_map)
     # Restore checkpoints specifying the tree structure.
     restored_filepath_tree_map = base.restore_multiple_checkpoints(
         jax.tree_structure(filepath_tree_map).unflatten([1, 2, 3, 4]))
-    jax.tree_multimap(np.testing.assert_array_equal, restored_filepath_tree_map,
-                      filepath_tree_map)
+    jax.tree_map(np.testing.assert_array_equal, restored_filepath_tree_map,
+                 filepath_tree_map)
     # Check that the bfloat16 is restored properly.
     self.assertEqual(
         restored_filepath_tree_map[workdir + '/checkpoint_2'].dtype,
