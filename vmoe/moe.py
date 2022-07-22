@@ -90,6 +90,40 @@ class BaseDispatcher(abc.ABC):
 
 
 @flax.struct.dataclass
+class DenseEinsumDispatcher(BaseDispatcher):
+  """Dispatcher using Einsum, dispatching data to all experts.
+
+  This is similar to EinsumDispatcher, but with the assumption that C = S.
+
+  Attributes:
+    combine_weights: (G, S, E) array with the combine weights for each item
+      (G, S) for each expert (E).
+    partition_spec: Optional. PartitionSpec used to constrain the sharding of
+      the data arrays. By default (None), no sharding constraint is specified.
+    einsum_precision: Optional. Precision used in all the einsums (e.g.
+      combining the outputs of different experts).
+  """
+  combine_weights: Array
+  partition_spec: Optional[PartitionSpec] = flax.struct.field(
+      pytree_node=False, default=None)
+  einsum_precision: jax.lax.Precision = flax.struct.field(
+      pytree_node=False, default=jax.lax.Precision.DEFAULT)
+
+  def dispatch(self, data: Array) -> Array:
+    dispatch_weights = jnp.ones_like(self.combine_weights, dtype=jnp.bool_)
+    data = jnp.einsum("GSE,GS...->GES...", dispatch_weights, data,
+                      precision=self.einsum_precision)
+    return _dispatch(data, self.partition_spec)
+
+  def combine(self, data: Array) -> Array:
+    """Combines data from experts according to combine_weights."""
+    num_groups, _, _ = self.combine_weights.shape
+    data = _receive(data, num_groups, self.partition_spec)
+    return jnp.einsum("GSE,GES...->GS...", self.combine_weights, data,
+                      precision=self.einsum_precision)
+
+
+@flax.struct.dataclass
 class EinsumDispatcher(BaseDispatcher):
   """Dispatcher using Einsum.
 
@@ -190,6 +224,13 @@ class Bfloat16Dispatcher(BaseDispatcher):
     data = _cast_to_bfloat16(data)
     data = self.dispatcher.combine(data)
     return data.astype(dtype)
+
+
+def get_dense_einsum_dispatcher(gates,
+                                **dispatcher_kwargs) -> DenseEinsumDispatcher:
+  # The dispatching algorithm is trivial, because all tokens are sent to
+  # all experts this is coded implicitly in the DenseEinsumDispatcher class.
+  return DenseEinsumDispatcher(combine_weights=gates, **dispatcher_kwargs)
 
 
 def get_top_experts_per_item_dispatcher(gates: Array, name: str,
