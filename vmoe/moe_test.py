@@ -235,6 +235,69 @@ class GetTopExpertsPerItemDispatcherTest(parameterized.TestCase):
           capacity_factor=None, batch_priority=False)
 
 
+class GetTopItemsPerExpertTest(parameterized.TestCase):
+
+  # The following tests represent the same scenario. There are three items in
+  # a group, and three experts, each with capacity = 2.
+  #
+  # The first expert selects items (1, 0), the second one selects experts (2, 1)
+  # and the third expert selects items (2, 1) too.
+  def test_top_items_per_expert_einsum(self):
+    gates = jnp.asarray([[.4, .0, .2], [.5, .1, .4], [.3, .2, .6]])
+    dispatcher, _ = moe._get_top_items_per_expert_einsum_dispatcher(
+        gates=gates, capacity=2)
+    self.assertIsInstance(dispatcher, moe.EinsumDispatcher)
+    np.testing.assert_array_almost_equal(
+        dispatcher.dispatch_weights,
+        np.asarray([[[0, 1], [0, 0], [0, 0]],
+                    [[1, 0], [0, 1], [0, 1]],
+                    [[0, 0], [1, 0], [1, 0]]], dtype=np.bool))
+    np.testing.assert_array_almost_equal(
+        dispatcher.combine_weights,
+        np.asarray([[[.0, .4], [.0, .0], [.0, .0]],
+                    [[.5, .0], [.0, .1], [.0, .4]],
+                    [[.0, .0], [.2, .0], [.6, .0]]], dtype=np.float32))
+
+  @parameterized.named_parameters(
+      ('einsum', 'einsum', moe.EinsumDispatcher),
+  )
+  def test_top_items_per_expert_metrics(self, name, cls):
+    gates = jnp.asarray([[.4, .0, .2], [.5, .1, .4], [.3, .2, .6]])
+    dispatcher, metrics = moe.get_top_items_per_expert_dispatcher(
+        gates=gates, name=name, capacity=2)
+    self.assertIsInstance(dispatcher, cls)
+    expected_metrics = {
+        'num_experts_per_item_min': 1,
+        'num_experts_per_item_max': 3,
+        'min_selected_gate': .1,
+        'max_selected_gate': .6,
+        'ratio_processed_items_by_at_least_1_experts': 3 / 3,
+        'ratio_processed_items_by_at_least_2_experts': 2 / 3,
+        'ratio_processed_items_by_at_least_3_experts': 1 / 3,
+    }
+    chex.assert_trees_all_close(metrics, expected_metrics)
+
+  @mock.patch.object(moe, '_get_top_items_per_expert_einsum_dispatcher')
+  def test_top_items_per_expert_capacity_factor(self, mock_fn):
+    gates = jnp.zeros((128, 32), dtype=jnp.float32)
+    _ = moe.get_top_items_per_expert_dispatcher(
+        gates=gates, name='einsum', capacity=None, capacity_factor=2.0)
+    expected_capacity = 128 * 2 // 32
+    mock_fn.assert_called_with(gates, expected_capacity)
+
+  def test_top_items_per_expert_unknown_dispatcher(self):
+    gates = jnp.zeros((4, 32))
+    with self.assertRaisesRegex(ValueError, 'Unknown dispatcher type'):
+      moe.get_top_items_per_expert_dispatcher(gates, name='foo', capacity=2)
+
+  def test_top_items_per_expert_missing_capacity(self):
+    gates = jnp.zeros((4, 32))
+    with self.assertRaisesRegex(
+        ValueError, "You must specify either 'capacity' or 'capacity_factor'"):
+      moe.get_top_items_per_expert_dispatcher(
+          gates, name='foo', capacity=None, capacity_factor=None)
+
+
 class DummyExpert(nn.Module):
   """Expert with a single scalar parameter that is added to the input."""
 

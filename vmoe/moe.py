@@ -249,6 +249,56 @@ def get_top_experts_per_item_dispatcher(gates: Array, name: str,
                       **dispatcher_kwargs)
 
 
+def get_top_items_per_expert_dispatcher(
+    gates: Array,
+    name: str,
+    capacity: Optional[int] = None,
+    capacity_factor: Optional[float] = None,
+    **dispatcher_kwargs) -> Tuple[BaseDispatcher, Dict[str, Array]]:
+  """Returns a dispatcher implementing Top-Items-Per-Expert routing.
+
+  For each expert, the top `capacity` items with the largest gating score are
+  selected in a greedy fashion. This ensures that all experts process exactly
+  `capacity` items, so they have a perfectly balanced load. However, it ignores
+  the standard assumption that each item must be processed by a fixed number of
+  experts.
+
+  Args:
+    gates: (S, E) array with the gating values for each (item, expert).
+      These values will also be used as combine_weights for the selected pairs.
+    name: String with the type of dispatcher to use (supported values are
+      "einsum").
+    capacity: If given, maximum number of items processed by each expert.
+      Either this or `capacity_factor` must be given.
+    capacity_factor: If given, sets the `capacity` to this factor of S / E.
+      Either this or `capacity` must be given.
+    **dispatcher_kwargs: Additional arguments for the dispatcher object.
+
+  Returns:
+    A dispatcher and a dictionary of metrics.
+  """
+  if (capacity is None) == (capacity_factor is None):
+    raise ValueError(
+        "You must specify either 'capacity' or 'capacity_factor', and not both."
+        f" Current values are capacity = {capacity!r}, "
+        f"capacity_factor = {capacity_factor!r}")
+  if not capacity:
+    group_size, num_experts = gates.shape
+    capacity = _compute_capacity(
+        # Target number of tokens to split among the `num_experts` experts.
+        num_tokens=group_size,
+        num_experts=num_experts,
+        capacity_factor=capacity_factor)
+
+  fn_map = {
+      "einsum": _get_top_items_per_expert_einsum_dispatcher,
+      # TODO(jpuigcerver): Implement indices dispatcher for Top-C routing.
+  }
+  if name not in fn_map:
+    raise ValueError(f"Unknown dispatcher type: {name!r}")
+  return fn_map[name](gates, capacity, **dispatcher_kwargs)
+
+
 def sparse_moe_spmd(target: flax.linen.transforms.Target,
                     variable_axes: Mapping[flax.core.lift.CollectionFilter,
                                            flax.core.lift.InOutAxis],
@@ -521,3 +571,43 @@ def _get_top_experts_per_item_expert_indices_dispatcher(
       **dispatcher_kwargs)
 
 
+def _get_top_items_per_expert_einsum_dispatcher(
+    gates: Array, capacity: int,
+    **dispatcher_kwargs) -> Tuple[EinsumDispatcher, Dict[str, Array]]:
+  """Returns an EinsumDispatcher performing Top-Items-Per-Expert routing.
+
+  Args:
+    gates: (S, E) array with the gating values for each (item, expert).
+      These values will also be used as combine_weights for the selected pairs.
+    capacity: Maximum number of items processed by each expert.
+    **dispatcher_kwargs: Additional arguments for the EinsumDispatcher.
+
+  Returns:
+    An EinsumDispatcher object and a dictionary of metrics.
+  """
+  group_size, num_experts = gates.shape
+  # Get top items for each expert, and convert to one hot. (E, C) -> (S, E, C).
+  top_items_gates, top_items_index = jax.lax.top_k(gates.transpose(), capacity)
+  dispatch_weights = jax.nn.one_hot(top_items_index, group_size, axis=0,
+                                    dtype=jnp.bool_)
+  einsum_precision = dispatcher_kwargs.get("einsum_precision",
+                                           jax.lax.Precision.DEFAULT)
+  combine_weights = jnp.einsum("SE,SEC->SEC", gates, dispatch_weights,
+                               precision=einsum_precision)
+  dispatcher = EinsumDispatcher(dispatch_weights=dispatch_weights,
+                                combine_weights=combine_weights,
+                                **dispatcher_kwargs)
+  # Compute metrics useful for monitoring training.
+  num_experts_per_item = jnp.sum(dispatch_weights, axis=(1, 2), dtype=jnp.int32)
+  metrics = {
+      "num_experts_per_item_min": jnp.min(num_experts_per_item),
+      "num_experts_per_item_max": jnp.max(num_experts_per_item),
+      "min_selected_gate": jnp.min(top_items_gates),
+      "max_selected_gate": jnp.max(top_items_gates),
+  }
+  log2_num_experts = int(math.log2(num_experts))
+  for t in [2**i for i in range(log2_num_experts + 1)] + [num_experts]:
+    ratio = jnp.sum(num_experts_per_item >= t) / group_size
+    metrics[f"ratio_processed_items_by_at_least_{t}_experts"] = ratio
+
+  return dispatcher, metrics
