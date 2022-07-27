@@ -18,8 +18,10 @@ from unittest import mock
 from absl.testing import absltest
 from absl.testing import parameterized
 import chex
+import clu.data
 import jax.experimental.maps
 import numpy as np
+import tensorflow as tf
 from vmoe.evaluate import fewshot
 
 
@@ -97,8 +99,6 @@ class FewShotPeriodicActionTest(absltest.TestCase):
     mock_info.info.features = {'label': mock_label_info}
     self.mock_tfds_builder.return_value = mock_info
 
-    self.mock_get_dataset = self.enter_context(
-        mock.patch.object(fewshot.vmoe.data.input_pipeline, 'get_dataset'))
     # 4 batches of 16 images each. The last 4 images are fake.
     images = np.tile(np.arange(4 * 16).reshape((4, 16, 1, 1, 1)),
                      (1, 1, 32, 32, 3)).astype(np.float32)
@@ -107,12 +107,14 @@ class FewShotPeriodicActionTest(absltest.TestCase):
         np.ones((3, 16)),
         np.concatenate([np.ones((1, 12)), np.zeros((1, 4))], axis=1),
     ], axis=0).astype(np.bool)
-    dataset = fewshot.tf.data.Dataset.from_tensor_slices({
+    dataset = tf.data.Dataset.from_tensor_slices({
         'image': images,
         'label': labels,
         fewshot.VALID_KEY: valid,
     })
-    self.mock_get_dataset.return_value = dataset
+    self.mock_get_dataset = self.enter_context(mock.patch.object(
+        fewshot.vmoe.data.input_pipeline, 'get_dataset',
+        side_effect=lambda *a, **kw: clu.data.TfDatasetIterator(dataset)))
 
   @classmethod
   def _apply_fn(cls, variables, images, rngs=None):

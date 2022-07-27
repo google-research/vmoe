@@ -54,7 +54,7 @@ from vmoe.train import train_state as train_state_module
 
 Array = jax.numpy.ndarray
 AsyncResult = multiprocessing.pool.AsyncResult
-Dataset = input_pipeline.tf.data.Dataset
+DatasetIterator = input_pipeline.DatasetIterator
 Mesh = partitioning.Mesh
 MeshPspecSharding = sharding.MeshPspecSharding
 PartitionSpec = partitioning.PartitionSpec
@@ -99,7 +99,7 @@ def create_evaluation_hook(
     base_model_config: ml_collections.ConfigDict,
     writer: metric_writers.MetricWriter,
     progress_hook: ReportProgress,
-    datasets: Mapping[str, Dataset],
+    datasets: Mapping[str, DatasetIterator],
     loss_fn: Callable[[Array, Array], Array],
     params_axis_resources: PyTree,
     input_axis_resources: PartitionSpec,
@@ -717,7 +717,7 @@ def _train_and_evaluate(config: ml_collections.ConfigDict, workdir: str,
     writer.write_scalars(init_step + 1, {'train/compile_secs': t1 - t0})
     # Create iterator over the train dataset.
     tr_iter = pjit_utils.prefetch_to_device(
-        iterator=input_pipeline.make_dataset_iterator(datasets['train']),
+        iterator=datasets['train'],
         axis_resources={'image': input_axis_resources,
                         'labels': input_axis_resources},
         size=config.dataset.train.get('prefetch_device'))
