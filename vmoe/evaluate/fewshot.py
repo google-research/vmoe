@@ -25,18 +25,19 @@ from typing import Any, Callable, Dict, Iterable, Mapping, Optional, Sequence, T
 import cachetools
 from clu import metric_writers
 from clu import periodic_actions
+import clu.data
 import flax.struct
 import jax
 import jax.experimental.pjit
 import jax.numpy as jnp
 import numpy as np
-import tensorflow as tf
 import tensorflow_datasets.public_api as tfds
 import vmoe.data.input_pipeline
 import vmoe.data.pjit_utils
 import vmoe.utils
 
 Array = Union[jax.numpy.ndarray, np.ndarray]
+DatasetIterator = clu.data.DatasetIterator
 PartitionSpec = jax.experimental.pjit.PartitionSpec
 PyTree = Any
 PRNGKey = jax.random.KeyArray
@@ -143,11 +144,11 @@ class FewShotPeriodicAction(periodic_actions.PeriodicCallback):
                         rng_keys, seed, metric_writer, report_progress,
                         report_progress_name, main_task, main_task_prefix):
     # Make an iterator over a dataset with optional device prefetching.
-    def make_dataset_iterator(dataset: tf.data.Dataset):
+    def make_dataset_iterator(dataset_iterator: DatasetIterator):
       return vmoe.data.pjit_utils.prefetch_to_device(
-          iterator=vmoe.data.input_pipeline.make_dataset_iterator(dataset),
+          iterator=dataset_iterator,
           axis_resources={
-              key: input_axis_resources for key in dataset.element_spec
+              key: input_axis_resources for key in dataset_iterator.element_spec
           },
           size=prefetch_to_device)
 
@@ -169,6 +170,9 @@ class FewShotPeriodicAction(periodic_actions.PeriodicCallback):
         t1_d = time.time()
         # Report few-shot eval duration for each dataset.
         metrics[f'{report_progress_name}/{name}/duration_secs'] = t1_d - t0_d
+        # Reset iterators for the next eval.
+        tr_ds.reset()
+        te_ds.reset()
       t1 = time.time()
       metrics[f'{report_progress_name}/duration_secs'] = t1 - t0
 
@@ -280,11 +284,11 @@ def _find_best_l2_reg(all_results, shots, l2_regs):
 def _get_datasets(
     datasets: Mapping[str, Tuple[str, str, str]],
     **dataset_kwargs,
-) -> Mapping[str, Tuple[tf.data.Dataset, tf.data.Dataset, int]]:
+) -> Mapping[str, Tuple[DatasetIterator, DatasetIterator, int]]:
   """Returns a dict with the train&test datasets, and the num_classes of each fewshot dataset."""
 
   @cachetools.cached(cache={})
-  def _get_dataset(name: str, split: str) -> tf.data.Dataset:
+  def _get_dataset(name: str, split: str) -> DatasetIterator:
     return vmoe.data.input_pipeline.get_dataset(
         variant='fewshot', name=name, split=split, **dataset_kwargs)
 
