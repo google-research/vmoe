@@ -19,6 +19,7 @@ from unittest import mock
 from absl.testing import absltest
 from absl.testing import parameterized
 import chex
+import clu.data
 import flax.linen as nn
 import jax
 import jax.numpy as jnp
@@ -437,7 +438,7 @@ class TrainAndEvaluateTest(parameterized.TestCase):
         'labels': tf.zeros((16, 10,), dtype=tf.float32),
     })
     dataset = dataset.repeat()
-    return dataset
+    return clu.data.TfDatasetIterator(dataset, checkpoint=False)
 
   @classmethod
   def create_dataset_eval(cls):
@@ -446,8 +447,16 @@ class TrainAndEvaluateTest(parameterized.TestCase):
         'labels': tf.zeros((16, 10,), dtype=tf.float32),
         VALID_KEY: tf.ones((16,), dtype=tf.bool),
     })
-    return dataset
+    return clu.data.TfDatasetIterator(dataset, checkpoint=False)
 
+  @classmethod
+  def create_dataset_fewshot(cls):
+    dataset = tf.data.Dataset.from_tensors({
+        'image': tf.zeros((16, 32, 32, 3), dtype=tf.float32),
+        'label': tf.zeros((16,), dtype=tf.float32),
+        VALID_KEY: tf.ones((16,), dtype=tf.bool),
+    })
+    return clu.data.TfDatasetIterator(dataset, checkpoint=False)
 
   @classmethod
   def create_flax_model(cls):

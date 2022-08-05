@@ -20,17 +20,18 @@ from typing import Any, Callable, Dict, Iterable, Mapping, Optional, Sequence
 import cachetools
 from clu import metric_writers
 from clu import periodic_actions
+import clu.data
 import flax.core
 import flax.struct
 import jax
 from jax.experimental import pjit
 import jax.numpy as jnp
 import numpy as np
-import tensorflow as tf
 from vmoe import utils
 from vmoe.data import input_pipeline
 
 Array = jnp.ndarray
+DatasetIterator = clu.data.DatasetIterator
 EvalStepPjitFn = Callable[['EvalState', 'PyTree', Array, Array, Array],
                           'EvalState']
 PartitionSpec = pjit.PartitionSpec
@@ -73,7 +74,7 @@ class EvaluateMultipleDatasets(periodic_actions.PeriodicCallback):
       label_pred_fn: Callable[[Array], Array],
       params_axis_resources: PyTree,
       input_axis_resources: PartitionSpec,
-      datasets: Mapping[str, tf.data.Dataset],
+      datasets: Mapping[str, DatasetIterator],
       metric_writer: metric_writers.MetricWriter,
       rng_keys: Sequence[str],
       seed: int = 0,
@@ -97,7 +98,7 @@ class EvaluateMultipleDatasets(periodic_actions.PeriodicCallback):
         partitioned.
       input_axis_resources: PartitionSpec indicating how the input to the model
         is partitioned.
-      datasets: Mapping from names to tf.data.Dataset objects with the datasets
+      datasets: Mapping from names to DatasetIterator objects with the datasets
         to evaluate.
       metric_writer: CLU metric_writer object, used to report the evaluation
         metrics.
@@ -189,6 +190,8 @@ class EvaluateMultipleDatasets(periodic_actions.PeriodicCallback):
             f'{name}/loss': eval_state.sum_loss / eval_state.num,
             f'{name}/duration_secs': t1 - t0,
         })
+        # Reset iterator for the next evaluation.
+        dataset.reset()
 
     if report_progress is None:
       return callback_fn
@@ -200,7 +203,7 @@ class EvaluateMultipleDatasets(periodic_actions.PeriodicCallback):
 def evaluate_dataset(
     *,
     eval_step_pjit: EvalStepPjitFn,
-    dataset: tf.data.Dataset,
+    dataset: DatasetIterator,
     params: PyTree,
     rng_keys: Sequence[str],
     seed: int = 0,
@@ -211,8 +214,7 @@ def evaluate_dataset(
       sum_correct=np.zeros((), dtype=np.float32),
       sum_loss=np.zeros((), dtype=np.float32),
       rngs=utils.make_rngs(tuple(rng_keys), seed))
-  eval_iter = input_pipeline.make_dataset_iterator(dataset)
-  for batch in eval_iter:
+  for batch in dataset:
     eval_state = eval_step_pjit(eval_state, params, batch['image'],
                                 batch['labels'], batch[VALID_KEY])
   return jax.tree_map(lambda x: x.block_until_ready(), eval_state)

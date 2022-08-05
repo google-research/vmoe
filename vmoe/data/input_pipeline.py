@@ -18,11 +18,11 @@ Most of these were originally implemented by: Lucas Beyer, Alex Kolesnikov,
 Xiaohua Zhai and other collaborators from Google Brain Zurich.
 """
 import ast
-from typing import Any, Callable, Dict, Iterator, Optional, Union
+from typing import Any, Callable, Dict, Optional, Union
 
+import clu.data
 import jax
 import ml_collections
-import numpy as np
 import tensorflow as tf
 import vmoe.data.builder
 import vmoe.data.pp_ops
@@ -31,10 +31,11 @@ DEFAULT_SHUFFLE_BUFFER = 50_000
 VALID_KEY = '__valid__'
 Data = Dict[str, Any]
 DatasetBuilder = vmoe.data.builder.DatasetBuilder
+DatasetIterator = clu.data.DatasetIterator
 
 
 def get_datasets(
-    config: ml_collections.ConfigDict) -> Dict[str, tf.data.Dataset]:
+    config: ml_collections.ConfigDict) -> Dict[str, DatasetIterator]:
   """Returns a dictionary of datasets to use for different variants."""
   datasets = {}
   for variant, variant_config in config.items():
@@ -59,8 +60,8 @@ def get_dataset(
     prefetch: Optional[Union[int, str]] = None,
     shuffle_buffer: int = DEFAULT_SHUFFLE_BUFFER,
     shuffle_seed: Optional[int] = None,
-    **extra_builder_kwargs) -> tf.data.Dataset:
-  """Returns a Tensorflow dataset.
+    **extra_builder_kwargs) -> DatasetIterator:
+  """Returns a dataset iterator.
 
   Args:
     variant: Variant (e.g. 'train', 'validation', ...).
@@ -79,7 +80,7 @@ def get_dataset(
     **extra_builder_kwargs: Additional kwargs passed to the DatasetBuilder.
 
   Returns:
-    A tf.data.Dataset.
+    A DatasetIterator.
   """
   builder = vmoe.data.builder.get_dataset_builder(
       name=name,
@@ -131,7 +132,10 @@ def get_dataset(
   if prefetch == 'autotune':
     prefetch = tf.data.experimental.AUTOTUNE
   data = data.prefetch(prefetch) if prefetch else data
-  return data
+  # Note: checkpointing of TfDatasetIterators is very disk and time consuming,
+  # For now, we disable checkpointing of the dataset iterator until we have a
+  # better alternative.
+  return clu.data.TfDatasetIterator(data, checkpoint=False)
 
 
 def get_data_num_examples(config: ml_collections.ConfigDict) -> int:
@@ -165,17 +169,6 @@ def get_data_process_fn(process_str: str) -> Callable[[Data], Data]:
     ops.append(op_fn)
 
   return _compose_fns(*ops)
-
-
-def make_dataset_iterator(dataset: tf.data.Dataset) -> Iterator[Dict[str, Any]]:
-  """Returns an iterator over a TF Dataset."""
-
-  def to_numpy(data):
-    return jax.tree_map(lambda x: np.asarray(memoryview(x)), data)
-
-  ds_iter = iter(dataset)
-  ds_iter = map(to_numpy, ds_iter)
-  return ds_iter
 
 
 def _parse_process_op_str(string_to_parse):

@@ -16,6 +16,7 @@
 from unittest import mock
 
 from absl.testing import absltest
+import clu.data
 import jax
 from jax.experimental import maps
 import numpy as np
@@ -23,6 +24,7 @@ import tensorflow as tf
 from vmoe.evaluate import evaluator
 
 PartitionSpec = evaluator.PartitionSpec
+TfDatasetIterator = clu.data.TfDatasetIterator
 
 
 class EvalStateTest(absltest.TestCase):
@@ -73,7 +75,7 @@ class EvaluatorTest(absltest.TestCase):
         # 0 or loss[i].
         sum_loss=tf.reduce_sum(loss * valid).numpy(),
         rngs={})
-    return dataset, expected_eval_state
+    return TfDatasetIterator(dataset), expected_eval_state
 
   def test_evaluate_dataset(self):
     # Create random test dataset.

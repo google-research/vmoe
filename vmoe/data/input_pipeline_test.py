@@ -103,7 +103,7 @@ class GetDatasetTest(absltest.TestCase):
     # Training data doesn't need fake examples.
     self.assertSetEqual(set(data[0].keys()), {'x', 'y'})
     # Check that data is shuffled.
-    self.assertGreater(len(set(tuple(x['x'].numpy()) for x in data)), 1)
+    self.assertGreater(len(set(tuple(x['x']) for x in data)), 1)
 
   def test_eval(self):
     # Dataset config.
@@ -121,8 +121,8 @@ class GetDatasetTest(absltest.TestCase):
                         {'x', 'y', input_pipeline.VALID_KEY})
     # Eval data is not shuffled, and the fake data corresponds to the first
     # element.
-    self.assertTupleEqual(tuple(data[0]['x'].numpy()), (0, 1, 2, 0, 0))
-    self.assertTupleEqual(tuple(data[0][input_pipeline.VALID_KEY].numpy()),
+    self.assertTupleEqual(tuple(data[0]['x']), (0, 1, 2, 0, 0))
+    self.assertTupleEqual(tuple(data[0][input_pipeline.VALID_KEY]),
                           (True, True, True, False, False))
 
 
@@ -147,22 +147,6 @@ class GetDatasetTests(absltest.TestCase):
     config = ml_collections.ConfigDict({'variant': 1})
     with self.assertRaisesRegex(TypeError, "The config for the 'variant'"):
       input_pipeline.get_datasets(config)
-
-
-class MakeDatasetIteratorTest(absltest.TestCase):
-
-  def test(self):
-    dataset = tf.data.Dataset.from_tensor_slices({
-        'a': tf.convert_to_tensor([0.1, 0.2, 0.3]),
-    })
-    dataset_iter = input_pipeline.make_dataset_iterator(dataset)
-    batches = list(dataset_iter)
-    self.assertIsInstance(batches[0]['a'], np.ndarray)
-    self.assertIsInstance(batches[1]['a'], np.ndarray)
-    self.assertIsInstance(batches[2]['a'], np.ndarray)
-    self.assertAlmostEqual(batches[0]['a'], 0.1)
-    self.assertAlmostEqual(batches[1]['a'], 0.2)
-    self.assertAlmostEqual(batches[2]['a'], 0.3)
 
 
 if __name__ == '__main__':
