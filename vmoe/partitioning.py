@@ -431,7 +431,7 @@ def tree_global_shape(tree: PyTree, axis_resources: PyTree,
   ]
   positional_semantics = [maps._PositionalSemantics.LOCAL for _ in tree_leaves]
   global_aval_leaves = pjit.local_to_global(
-      positional_semantics, tree_leaves, shardings)
+      positional_semantics, tree_leaves, shardings, mesh)
   return jax.tree_unflatten(struct, global_aval_leaves)
   # pylint: enable=protected-access
 

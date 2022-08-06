@@ -760,7 +760,7 @@ def tree_global_to_local_shape(tree, axis_resources, mesh):
   positional_semantics = [_PositionalSemantics.LOCAL for _ in global_shapes]
   shardings = [MeshPspecSharding(mesh, spec) for spec in axis_resources]
   local_shapes = pjit.global_to_local(positional_semantics, global_shapes,
-                                      shardings)
+                                      shardings, mesh)
   return struct_tree.unflatten([
       jax.ShapeDtypeStruct(shape=s, dtype=x.dtype)
       for x, s in zip(leaves, local_shapes)

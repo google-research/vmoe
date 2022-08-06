@@ -156,7 +156,7 @@ def _restore_checkpoint_from_index(
   positional_semantics = [_PositionalSemantics.LOCAL for _ in global_avals]
   shardings = [MeshPspecSharding(mesh, spec) for spec in axis_resources]
   local_avals = pjit.global_to_local(positional_semantics, global_avals,
-                                     shardings)
+                                     shardings, mesh)
   local_mesh = mesh.local_mesh
   # For each array to restore, get local/global SliceNdArrays indicating which
   # local/global slice is stored in each device of the local/global mesh.
@@ -395,7 +395,7 @@ def _make_save_checkpoint_filepath_map(
   positional_semantics = [_PositionalSemantics.LOCAL for _ in local_avals]
   shardings = [MeshPspecSharding(mesh, spec) for spec in axis_resources]
   global_avals = pjit.local_to_global(positional_semantics, local_avals,
-                                      shardings)
+                                      shardings, mesh)
   local_mesh = mesh.local_mesh
   # For each input array, get local/global SliceNdArrays indicating which
   # local/global slice is stored in each device of the local/global mesh.
