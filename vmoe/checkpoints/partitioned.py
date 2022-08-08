@@ -155,12 +155,16 @@ def _restore_checkpoint_from_index(
   global_avals = [x.global_shape for x in index]
   positional_semantics = [_PositionalSemantics.LOCAL for _ in global_avals]
   shardings = [MeshPspecSharding(mesh, spec) for spec in axis_resources]
+  parsed_axis_resources = [spec._parsed_pspec for spec in shardings]  # pylint: disable=protected-access
+  shardings = [
+      pjit.to_op_sharding_sharding(s, a.ndim)
+      for a, s in zip(global_avals, shardings)
+  ]
   local_avals = pjit.global_to_local(positional_semantics, global_avals,
                                      shardings, mesh)
   local_mesh = mesh.local_mesh
   # For each array to restore, get local/global SliceNdArrays indicating which
   # local/global slice is stored in each device of the local/global mesh.
-  parsed_axis_resources = [spec._parsed_pspec for spec in shardings]  # pylint: disable=protected-access
   local_slices_arrays = _make_slice_nd_arrays(
       local_avals, parsed_axis_resources, local_mesh)
   global_slices_arrays = _make_slice_nd_arrays(
@@ -394,12 +398,16 @@ def _make_save_checkpoint_filepath_map(
   ]
   positional_semantics = [_PositionalSemantics.LOCAL for _ in local_avals]
   shardings = [MeshPspecSharding(mesh, spec) for spec in axis_resources]
+  parsed_axis_resources = [spec._parsed_pspec for spec in shardings]  # pylint: disable=protected-access
+  shardings = [
+      pjit.to_op_sharding_sharding(s, a.ndim)
+      for a, s in zip(local_avals, shardings)
+  ]
   global_avals = pjit.local_to_global(positional_semantics, local_avals,
                                       shardings, mesh)
   local_mesh = mesh.local_mesh
   # For each input array, get local/global SliceNdArrays indicating which
   # local/global slice is stored in each device of the local/global mesh.
-  parsed_axis_resources = [spec._parsed_pspec for spec in shardings]  # pylint: disable=protected-access
   local_slices_arrays = _make_slice_nd_arrays(
       local_avals, parsed_axis_resources, local_mesh)
   global_slices_arrays = _make_slice_nd_arrays(
