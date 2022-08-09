@@ -54,13 +54,17 @@ class ReportProgressTest(parameterized.TestCase):
         action(step=step,
                scalar_metrics={'foo': step / 10, 'bar': {'foo': step / 100}})
     call_arg_list = writer.write_scalars.call_args_list
-    self.assertLen(call_arg_list, 2 * 2)
+    self.assertLen(call_arg_list, 2 * 3)
     self.assertEqual(call_arg_list[0],
                      mock.call(4, {'steps_per_sec': mock.ANY}))
-    self.assertEqual(call_arg_list[1], mock.call(4, expected[0]))
-    self.assertEqual(call_arg_list[2],
+    self.assertEqual(call_arg_list[1],
+                     mock.call(4, {'uptime': mock.ANY}))
+    self.assertEqual(call_arg_list[2], mock.call(4, expected[0]))
+    self.assertEqual(call_arg_list[3],
                      mock.call(8, {'steps_per_sec': mock.ANY}))
-    self.assertEqual(call_arg_list[3], mock.call(8, expected[1]))
+    self.assertEqual(call_arg_list[4],
+                     mock.call(8, {'uptime': mock.ANY}))
+    self.assertEqual(call_arg_list[5], mock.call(8, expected[1]))
 
 
 @contextlib.contextmanager
