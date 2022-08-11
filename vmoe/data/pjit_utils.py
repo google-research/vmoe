@@ -85,7 +85,8 @@ def prefetch_to_device(
 
   @jax.profiler.annotate_function
   def _prefetch(x, local_aval, sharding_spec, indices):
-    device_buffers = jax.pxla._shard_arg(x, local_devices, indices)  # pylint: disable=protected-access
+    mode = jax.pxla.InputsHandlerMode.pjit_or_xmap
+    device_buffers = jax.pxla._shard_arg(x, local_devices, indices, mode)  # pylint: disable=protected-access
     return jax.pxla.make_sharded_device_array(
         local_aval, sharding_spec, device_buffers, indices)
 
