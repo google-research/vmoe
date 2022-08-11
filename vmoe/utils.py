@@ -18,6 +18,7 @@ import functools
 from typing import Any, Callable, Dict, Iterator, Tuple, Type
 
 import jax
+import jax.numpy as jnp
 
 PRNGKey = jax.random.KeyArray
 
@@ -34,6 +35,15 @@ def make_rngs(rng_keys: Tuple[str, ...], seed: int = 0) -> Dict[str, PRNGKey]:
     return dict(zip(rng_keys, rngs))
 
   return _make_rngs()
+
+
+def multiply_no_nan(x, y):
+  """Multiplies x and y and returns 0 if x is 0, even if y is not finite."""
+  # Note: This is equivalent to tf.math.multiply_no_nan, with safe gradients.
+  x_ok = x != 0.
+  safe_x = jnp.where(x_ok, x, 1.)
+  safe_y = jnp.where(x_ok, y, 1.)
+  return jnp.where(x_ok, jax.lax.mul(safe_x, safe_y), jnp.zeros_like(x))
 
 
 def partialclass(cls: Type[Any], *base_args, **base_kwargs):

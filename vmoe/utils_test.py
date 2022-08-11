@@ -16,10 +16,21 @@
 import dataclasses
 
 from absl.testing import absltest
+import jax
+import numpy as np
 from vmoe import utils
 
 
 class UtilsTest(absltest.TestCase):
+
+  def test_multiply_no_nan(self):
+    x = np.asarray([0.0, 0.0, 2.0])
+    y = np.asarray([np.nan, np.inf, 3.0])
+    np.testing.assert_allclose(utils.multiply_no_nan(x, y), [0.0, 0.0, 6.0])
+    dx = jax.grad(lambda x: utils.multiply_no_nan(x, y).sum())(x)
+    np.testing.assert_allclose(dx, [0.0, 0.0, 3.0])
+    dy = jax.grad(lambda y: utils.multiply_no_nan(x, y).sum())(y)
+    np.testing.assert_allclose(dy, [0.0, 0.0, 2.0])
 
   def test_partialclass(self):
 
