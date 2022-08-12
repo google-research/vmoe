@@ -15,8 +15,8 @@
 """Module with several util functions."""
 import collections.abc
 import functools
-from typing import Any, Callable, Dict, Iterator, Tuple, Type
-
+import re
+from typing import Any, Callable, Dict, Iterator, Optional, Sequence, Tuple, Type
 import jax
 import jax.numpy as jnp
 
@@ -117,3 +117,19 @@ def tree_shape_dtype_struct(tree):
     dtype = dtype.as_numpy_dtype if hasattr(dtype, 'as_numpy_dtype') else dtype
     return jax.ShapeDtypeStruct(shape=shape, dtype=dtype)
   return jax.tree_map(fn, tree)
+
+
+def make_match_fn_from_regex_list(
+    regexes: Optional[Sequence[str]]) -> Optional[Callable[[str], bool]]:
+  """Creates a function returning True iff a str matches any of the regexes."""
+
+  if not regexes:
+    return None
+  if isinstance(regexes, str):
+    regexes = [regexes]
+  joined_regex = re.compile(
+      '(?:' + '|'.join([f'(?:{r})' for r in regexes]) + ')')
+
+  def fn(string: str) -> bool:
+    return joined_regex.search(string) is not None
+  return fn

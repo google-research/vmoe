@@ -574,6 +574,7 @@ def train_step(
     images: Array,
     labels: Array,
     loss_fn: Callable[[Array, Array], Array],
+    plot_grad_norm_name_fn: Optional[Callable[[str], bool]] = None,
 ) -> Tuple[TrainState, Mapping[str, Any]]:
   """Performs one update step of the given TrainState object ."""
   rngs, next_rngs = utils.tree_rngs_split(state.rngs)
@@ -589,6 +590,14 @@ def train_step(
     return total_loss, metrics
 
   grads, metrics = compute_grads_and_metrics(state.params)
+
+  if plot_grad_norm_name_fn:
+    # Compute norm of selected parameters and add them as auxiliary metrics.
+    metrics.update({
+        f'grads_norm/{name}': jnp.sqrt(jnp.vdot(grad, grad))
+        for name, grad in flax.traverse_util.flatten_dict(
+            grads, sep='/').items() if plot_grad_norm_name_fn(name)
+    })
   return state.apply_gradients(grads=grads, rngs=next_rngs), metrics
 
 
@@ -649,9 +658,13 @@ def _train_and_evaluate(config: ml_collections.ConfigDict, workdir: str,
       thread_pool=ThreadPool(),
       initialization_kwargs=config.get('initialization'))
   init_step = int(train_state.step)
-
   train_loss_fn, eval_loss_fn, label_pred_fn = get_loss_fn(**config.loss)
-  train_step_fn = functools.partial(train_step, loss_fn=train_loss_fn)
+  plot_grad_norm_name_fn = utils.make_match_fn_from_regex_list(
+      config.get('plot_grad_norm_patterns'))
+  train_step_fn = functools.partial(
+      train_step,
+      loss_fn=train_loss_fn,
+      plot_grad_norm_name_fn=plot_grad_norm_name_fn)
   # If mixup options are defined, wrap the train_step_fn with mixup.
   if config.get('mixup', {}):
     mixup_config = config.mixup.to_dict()

@@ -64,6 +64,22 @@ class UtilsTest(absltest.TestCase):
     with self.assertRaises(utils.SafeZipIteratorError):
       list(utils.safe_zip([1], ['a'], []))
 
+  def test_make_match_fn_from_regex_list(self):
+    regexes = ['ab', 'c']
+    match_fn = utils.make_match_fn_from_regex_list(regexes)
+    self.assertFalse(match_fn('d'))
+    self.assertFalse(match_fn('adb'))
+    self.assertTrue(match_fn('acb'))    # c is the matching regex.
+    self.assertTrue(match_fn('abd'))   # ab is the matching regex.
+    self.assertTrue(match_fn('dabd'))  # ab is the matching regex.
+
+    regexes = 'ab'
+    match_fn = utils.make_match_fn_from_regex_list(regexes)
+    self.assertFalse(match_fn('cb'))
+    self.assertFalse(match_fn('ac'))
+    self.assertTrue(match_fn('aab'))    # ab is the matching regex.
+    self.assertTrue(match_fn('abd'))   # ab is the matching regex.
+
 
 if __name__ == '__main__':
   absltest.main()
