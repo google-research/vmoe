@@ -640,15 +640,9 @@ def _get_top_items_per_expert_einsum_dispatcher(
                                 **dispatcher_kwargs)
   # Compute metrics useful for monitoring training.
   num_experts_per_item = jnp.sum(dispatch_weights, axis=(1, 2), dtype=jnp.int32)
-  num_items_per_expert = jnp.sum(dispatch_weights, axis=(0, 2), dtype=jnp.int32)
-  # print(dispatch_weights)
   metrics = {
       "num_experts_per_item_min": jnp.min(num_experts_per_item),
       "num_experts_per_item_max": jnp.max(num_experts_per_item),
-      "num_experts_per_item_avg": jnp.mean(num_experts_per_item),
-      "num_items_per_expert_min": jnp.min(num_items_per_expert),
-      "num_items_per_expert_max": jnp.max(num_items_per_expert),
-      "num_items_per_expert_avg": jnp.mean(num_items_per_expert),
       "min_selected_gate": jnp.min(top_items_gates),
       "max_selected_gate": jnp.max(top_items_gates),
   }
