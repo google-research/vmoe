@@ -19,6 +19,7 @@ from absl.testing import absltest
 from absl.testing import parameterized
 import chex
 import jax
+from jax._src.lib import xla_bridge
 import jax.numpy as jnp
 import numpy as np
 from vmoe.checkpoints import base
@@ -179,7 +180,7 @@ class PairLocalAndGlobalSlicesTest(parameterized.TestCase):
 
     mesh, local_slices_array, global_slices_array = getattr(self, make_data)()
     with mock.patch.object(
-        jax._src.lib.xla_bridge, 'process_index', return_value=process_index):
+        xla_bridge, 'process_index', return_value=process_index):
       pairs = list(partitioned._pair_local_and_global_slices(
           [local_slices_array], [global_slices_array], mesh, local_mesh=None))
     self.assertLen(pairs, 1)
@@ -329,7 +330,7 @@ class RestoreAndSaveCheckpointTest(parameterized.TestCase):
     with mock.patch.object(partitioned.vmoe.checkpoints.base,
                            'restore_checkpoint', side_effect=side_effect):
       with mock.patch.object(jax, 'process_index', return_value=process_index):
-        with mock.patch.object(jax._src.lib.xla_bridge, 'process_index',
+        with mock.patch.object(xla_bridge, 'process_index',
                                return_value=process_index):
           restored = partitioned.restore_checkpoint(
               prefix=prefix,
@@ -405,7 +406,7 @@ class RestoreAndSaveCheckpointTest(parameterized.TestCase):
     # Note: we need to mock both jax.process_index AND
     # jax._src.lib.process_index.
     with mock.patch.object(jax, 'process_index', return_value=process_index):
-      with mock.patch.object(jax._src.lib.xla_bridge, 'process_index',
+      with mock.patch.object(xla_bridge, 'process_index',
                              return_value=process_index):
         async_result = partitioned.save_checkpoint(
             prefix=prefix, tree=tree, axis_resources=axis_resources, mesh=mesh,
