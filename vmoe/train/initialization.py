@@ -20,6 +20,7 @@ from typing import Any, Optional, Sequence, Tuple
 from absl import logging
 import flax.core
 import flax.traverse_util
+import jax
 from jax.experimental import maps
 import numpy as np
 import scipy.ndimage
@@ -27,6 +28,7 @@ from vit_jax import checkpoint as vit_jax_checkpoint
 from vmoe.checkpoints import partitioned as vmoe_partitioned_checkpoint
 
 
+ShapeDtypeStruct = jax.ShapeDtypeStruct
 PyTree = Any
 ThreadPool = multiprocessing.pool.ThreadPool
 
@@ -258,7 +260,8 @@ def _zoom_position_embedding(source, target):
 
   Args:
     source: Array with the source position embeddings to use.
-    target: Array with the target position embeddings to replace with `source`.
+    target: Array or ShapeDtypeStruct with the target position embeddings to
+      replace with `source`.
 
   Returns:
     An array with the same shape as target.
@@ -274,17 +277,24 @@ def _zoom_position_embedding(source, target):
                      f'{source.shape[2]} vs. {target.shape[2]}')
 
   def _get_tok_and_grid_emb(value):
-    _, num_tokens, hidden_size = value.shape
+    (_, num_tokens, hidden_size), dtype = value.shape, value.dtype
     sqrt_tokens = int(np.sqrt(num_tokens))
     grid_shape = (sqrt_tokens, sqrt_tokens, hidden_size)
-    if sqrt_tokens**2 == num_tokens:
-      return None, value[0, :, :].reshape(grid_shape)
-    elif sqrt_tokens**2 + 1 == num_tokens:
-      return value[0, :1, :], value[0, 1:, :].reshape(grid_shape)
-    else:
+    if num_tokens not in (sqrt_tokens**2, sqrt_tokens**2 + 1):
       raise ValueError(f"{num_tokens} tokens found, which is neither a perfect "
                        "square nor a perfect square + 1. This means that the "
                        "grid used is not squared. This isn't supported.")
+    if isinstance(value, ShapeDtypeStruct):
+      grid_emb = ShapeDtypeStruct(grid_shape, dtype)
+      if sqrt_tokens**2 == num_tokens:
+        return None, grid_emb
+      else:
+        return ShapeDtypeStruct((1, hidden_size), dtype), grid_emb
+    else:
+      if sqrt_tokens**2 == num_tokens:
+        return None, value[0, :, :].reshape(grid_shape)
+      else:
+        return value[0, :1, :], value[0, 1:, :].reshape(grid_shape)
 
   source_tok_emb, source_grid_emb = _get_tok_and_grid_emb(source)
   target_tok_emb, target_grid_emb = _get_tok_and_grid_emb(target)
@@ -293,6 +303,11 @@ def _zoom_position_embedding(source, target):
   source_grid_emb = scipy.ndimage.zoom(source_grid_emb, zoom, order=1)
   output = source_grid_emb.reshape((-1,) + source_grid_emb.shape[2:])
   if target_tok_emb is not None:
+    if source_tok_emb is None and isinstance(target_tok_emb, ShapeDtypeStruct):
+      raise ValueError(
+          'source_tok_emb is None, but target_tok_emb is a ShapeDtypeStruct, '
+          'not an actual array containing data. This is not supported because '
+          'we cannot initialize part of an array.')
     output = np.concatenate([
         source_tok_emb if source_tok_emb is not None else target_tok_emb,
         output,
