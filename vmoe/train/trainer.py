@@ -53,6 +53,7 @@ from vmoe.train import train_state as train_state_module
 
 
 Array = jax.numpy.ndarray
+ArraySpecDict = input_pipeline.ArraySpecDict
 AsyncResult = multiprocessing.pool.AsyncResult
 DatasetIterator = input_pipeline.DatasetIterator
 Mesh = partitioning.Mesh
@@ -630,7 +631,8 @@ def _train_and_evaluate(config: ml_collections.ConfigDict, workdir: str,
       train_batch_size)
 
   # Get the global shape of the image array.
-  train_image_shape = datasets['train'].element_spec['image'].shape
+  element_spec: ArraySpecDict = datasets['train'].element_spec  # pytype: disable=annotation-type-mismatch
+  train_image_shape = tuple(element_spec['image'].shape)
   train_image_shape = (train_batch_size,) + train_image_shape[1:]
   # Get the PartitionSpec for the inputs. By default, the first axis (batch)
   # is split among all axes of the logical device mesh, meaning that data is

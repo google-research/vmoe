@@ -29,6 +29,8 @@ import vmoe.data.pp_ops
 
 DEFAULT_SHUFFLE_BUFFER = 50_000
 VALID_KEY = '__valid__'
+ArraySpec = clu.data.dataset_iterator.ArraySpec
+ArraySpecDict = Dict[str, ArraySpec]
 Data = Dict[str, Any]
 DatasetBuilder = vmoe.data.builder.DatasetBuilder
 DatasetIterator = clu.data.DatasetIterator
