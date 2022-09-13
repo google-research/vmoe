@@ -20,7 +20,7 @@ Xiaohua Zhai and other collaborators from Google Brain Zurich.
 import ast
 from typing import Any, Callable, Dict, Optional, Union
 
-import clu.data
+from clu.data import dataset_iterator
 import jax
 import ml_collections
 import tensorflow as tf
@@ -29,11 +29,12 @@ import vmoe.data.pp_ops
 
 DEFAULT_SHUFFLE_BUFFER = 50_000
 VALID_KEY = '__valid__'
-ArraySpec = clu.data.dataset_iterator.ArraySpec
+ArraySpec = dataset_iterator.ArraySpec
 ArraySpecDict = Dict[str, ArraySpec]
 Data = Dict[str, Any]
 DatasetBuilder = vmoe.data.builder.DatasetBuilder
-DatasetIterator = clu.data.DatasetIterator
+DatasetIterator = dataset_iterator.DatasetIterator
+TfDatasetIterator = dataset_iterator.TfDatasetIterator
 
 
 def get_datasets(
@@ -137,7 +138,7 @@ def get_dataset(
   # Note: checkpointing of TfDatasetIterators is very disk and time consuming,
   # For now, we disable checkpointing of the dataset iterator until we have a
   # better alternative.
-  return clu.data.TfDatasetIterator(data, checkpoint=False)
+  return TfDatasetIterator(data, checkpoint=False)
 
 
 def get_data_num_examples(config: ml_collections.ConfigDict) -> int:

@@ -25,7 +25,6 @@ from typing import Any, Callable, Dict, Iterable, Mapping, Optional, Sequence, T
 import cachetools
 from clu import metric_writers
 from clu import periodic_actions
-import clu.data
 import flax.struct
 import jax
 import jax.experimental.pjit
@@ -37,7 +36,7 @@ import vmoe.data.pjit_utils
 import vmoe.utils
 
 Array = Union[jax.numpy.ndarray, np.ndarray]
-DatasetIterator = clu.data.DatasetIterator
+DatasetIterator = vmoe.data.input_pipeline.DatasetIterator
 PartitionSpec = jax.experimental.pjit.PartitionSpec
 PyTree = Any
 PRNGKey = jax.random.KeyArray
