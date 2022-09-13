@@ -65,6 +65,8 @@ class FewShotPeriodicAction(periodic_actions.PeriodicCallback):
       input_axis_resources: PartitionSpec,
       rng_keys: Sequence[str],
       seed: int = 0,
+      seed_fold_in_step: bool = False,
+      seeds_per_step: int = 1,
       main_task: Optional[Tuple[str, int]] = None,
       main_task_prefix: str = '0',
       every_steps: Optional[int] = None,
@@ -97,6 +99,9 @@ class FewShotPeriodicAction(periodic_actions.PeriodicCallback):
       rng_keys: Collection of PRNG names that the `apply_fn` expects. It can be
         empty if the evaluation is deterministic.
       seed: Seed used to create PRNGKeys (default = 0).
+      seed_fold_in_step: If True, folds the step number in the seed at each
+        evaluation.
+      seeds_per_step: Number of seeds to use in each evaluation run.
       main_task: Optional pair (name, shot) indicating the main task to report
         separately to the metric_writer.
       main_task_prefix: Prefix used to report the accuracy of the main task.
@@ -125,6 +130,8 @@ class FewShotPeriodicAction(periodic_actions.PeriodicCallback):
         prefetch_to_device=prefetch_to_device,
         rng_keys=tuple(rng_keys),
         seed=seed,
+        seed_fold_in_step=seed_fold_in_step,
+        seeds_per_step=seeds_per_step,
         metric_writer=metric_writer,
         report_progress=report_progress,
         report_progress_name=report_progress_name,
@@ -141,8 +148,9 @@ class FewShotPeriodicAction(periodic_actions.PeriodicCallback):
   @classmethod
   def _make_callback_fn(cls, *, representation_fn, shots, l2_regs,
                         datasets_info, input_axis_resources, prefetch_to_device,
-                        rng_keys, seed, metric_writer, report_progress,
-                        report_progress_name, main_task, main_task_prefix):
+                        rng_keys, seed, seed_fold_in_step, seeds_per_step,
+                        metric_writer, report_progress, report_progress_name,
+                        main_task, main_task_prefix):
     # Make an iterator over a dataset with optional device prefetching.
     def make_dataset_iterator(dataset_iterator: DatasetIterator):
       return vmoe.data.pjit_utils.prefetch_to_device(
@@ -152,27 +160,40 @@ class FewShotPeriodicAction(periodic_actions.PeriodicCallback):
           },
           size=prefetch_to_device)
 
+    # Function used to fold data in a tree of PRNGKey values, with the keys in
+    # rng_keys.
+    tree_fold_in_pjit = _make_tree_rngs_fold_in_pjit(rng_keys)
+
     def callback_fn(step: int, t: Optional[float], variables: PyTree):
       del t  # Unused.
       # Two-level dict: first is dataset name, second level is (shot, l2_reg).
       all_results = {}
       metrics = {}
       t0 = time.time()
-      for name, (tr_ds, te_ds, num_classes) in datasets_info.items():
-        t0_d = time.time()
-        # Compute fewshot metrics.
-        # Note: We could fold-in here the dataset name and/or train step to use
-        # different initial seed for each eval.
-        state = FewShotState(rngs=vmoe.utils.make_rngs(rng_keys, seed))
-        all_results[name] = _compute_fewshot_metrics(
-            representation_fn, shots, l2_regs, num_classes, state, variables,
-            make_dataset_iterator(tr_ds), make_dataset_iterator(te_ds))
-        t1_d = time.time()
-        # Report few-shot eval duration for each dataset.
-        metrics[f'{report_progress_name}/{name}/duration_secs'] = t1_d - t0_d
-        # Reset iterators for the next eval.
-        tr_ds.reset()
-        te_ds.reset()
+      rngs = vmoe.utils.make_rngs(rng_keys, seed)
+      if seed_fold_in_step:
+        rngs = tree_fold_in_pjit(rngs, step)
+      for sub_seed in range(seeds_per_step):
+        # These are potentially used by the model, if it is non-deterministic.
+        rngs = tree_fold_in_pjit(rngs, sub_seed)
+        # This is used to permute the fewshot examples.
+        permute_seed = hash(
+            (seed, step, sub_seed) if seed_fold_in_step else (seed, sub_seed))
+        for name, (tr_ds, te_ds, num_classes) in datasets_info.items():
+          t0_d = time.time()
+          # Compute fewshot metrics.
+          state = FewShotState(rngs=rngs)
+          name = name if seeds_per_step == 1 else f'{name}-seed-{sub_seed}'
+          all_results[name] = _compute_fewshot_metrics(
+              representation_fn, shots, l2_regs, num_classes, state, variables,
+              make_dataset_iterator(tr_ds), make_dataset_iterator(te_ds),
+              permute_seed % 2**31)
+          t1_d = time.time()
+          # Report few-shot eval duration for each dataset.
+          metrics[f'{report_progress_name}/{name}/duration_secs'] = t1_d - t0_d
+          # Reset iterators for the next eval.
+          tr_ds.reset()
+          te_ds.reset()
       t1 = time.time()
       metrics[f'{report_progress_name}/duration_secs'] = t1 - t0
 
@@ -190,8 +211,14 @@ class FewShotPeriodicAction(periodic_actions.PeriodicCallback):
       # If a main task is specified, report the corresponding accuracy too.
       if main_task:
         name, shot = main_task
-        accuracy = all_results[name][shot, best_l2[shot]]
-        metrics[f'{main_task_prefix}/{name}/{shot}shot'] = accuracy
+        if seeds_per_step == 1:
+          accuracy = all_results[name][shot, best_l2[shot]]
+          metrics[f'{main_task_prefix}/{name}/{shot}shot'] = accuracy
+        else:
+          for sub_seed in range(seeds_per_step):
+            seed_name = f'{name}-seed-{sub_seed}'
+            seed_acc = all_results[seed_name][shot, best_l2[shot]]
+            metrics[f'{main_task_prefix}/{seed_name}/{shot}shot'] = seed_acc
       metric_writer.write_scalars(step, metrics)
 
     if report_progress is None:
@@ -210,6 +237,7 @@ def _compute_fewshot_metrics(
     variables: PyTree,
     tr_iter: Iterable[Mapping[str, Array]],
     te_iter: Iterable[Mapping[str, Array]],
+    seed: int = 0,
 ):
   """Computes few-shot accuracy and other metrics for a given dataset."""
   state, tr_features, tr_labels = _compute_representation(
@@ -217,7 +245,9 @@ def _compute_fewshot_metrics(
   state, te_features, te_labels = _compute_representation(
       representation_fn, state, variables, te_iter)
 
-  class_indices = [np.where(tr_labels == c)[0] for c in range(num_classes)]
+  rng = np.random.default_rng(seed)
+  class_indices = [
+      rng.permutation(np.where(tr_labels == c)[0]) for c in range(num_classes)]
   results = {}
   for shot in shots:
     all_idx = [indices[:shot] for indices in class_indices]
@@ -301,6 +331,18 @@ def _get_datasets(
             _get_num_classes(name))
       for key, (name, tr_split, te_split) in datasets.items()
   }
+
+
+def _make_tree_rngs_fold_in_pjit(rng_keys: Sequence[str]):
+
+  def tree_fold_in(tree, data):
+    return jax.tree_util.tree_map(lambda x: jax.random.fold_in(x, data), tree)
+
+  tree_axis_resources = {key: PartitionSpec() for key in rng_keys}
+  return jax.experimental.pjit.pjit(
+      tree_fold_in,
+      in_axis_resources=(tree_axis_resources, PartitionSpec()),
+      out_axis_resources=tree_axis_resources)
 
 
 def _make_fewshot_step_pjit(

@@ -153,6 +153,41 @@ class FewShotPeriodicActionTest(absltest.TestCase):
     self.assertEqual(call_args_list[0], mock.call(4, expected_metrics))
     self.assertEqual(call_args_list[1], mock.call(8, expected_metrics))
 
+  def test_periodic_action_metric_writer_multiple_seeds(self):
+    mock_metric_writer = mock.MagicMock(fewshot.metric_writers.MetricWriter)
+    periodic_action = fewshot.FewShotPeriodicAction(
+        metric_writer=mock_metric_writer,
+        datasets={'foo': ('tfds_name', 'train_split', 'test_split')},
+        apply_fn=self._apply_fn,
+        variables_axis_resources={},
+        input_axis_resources=fewshot.PartitionSpec('d'),
+        shots=[2, 5],
+        l2_regs=[0.01],
+        main_task=('foo', 2),
+        rng_keys=(),
+        every_steps=4,
+        seeds_per_step=2)
+    with jax.experimental.maps.Mesh(np.asarray(jax.local_devices()), ('d',)):
+      for step in range(1, 10):
+        periodic_action(step=step, variables={})
+    call_args_list = mock_metric_writer.write_scalars.call_args_list
+    self.assertLen(call_args_list, 2)
+    expected_metrics = {
+        '0/foo-seed-0/2shot': mock.ANY,
+        '0/foo-seed-1/2shot': mock.ANY,
+        'fewshot/2shot_best_l2': mock.ANY,
+        'fewshot/5shot_best_l2': mock.ANY,
+        'fewshot/foo-seed-0/duration_secs': mock.ANY,
+        'fewshot/foo-seed-0/2shot': mock.ANY,
+        'fewshot/foo-seed-0/5shot': mock.ANY,
+        'fewshot/foo-seed-1/duration_secs': mock.ANY,
+        'fewshot/foo-seed-1/2shot': mock.ANY,
+        'fewshot/foo-seed-1/5shot': mock.ANY,
+        'fewshot/duration_secs': mock.ANY,
+    }
+    self.assertEqual(call_args_list[0], mock.call(4, expected_metrics))
+    self.assertEqual(call_args_list[1], mock.call(8, expected_metrics))
+
   def test_periodic_action_report_progress(self):
     mock_metric_writer = mock.MagicMock(fewshot.metric_writers.MetricWriter)
     mock_report_progress = mock.MagicMock(
