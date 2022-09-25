@@ -112,9 +112,12 @@ class FewShotPeriodicActionTest(absltest.TestCase):
         'label': labels,
         fewshot.VALID_KEY: valid,
     })
-    self.mock_get_dataset = self.enter_context(mock.patch.object(
-        fewshot.vmoe.data.input_pipeline, 'get_dataset',
-        side_effect=lambda *a, **kw: clu.data.TfDatasetIterator(dataset)))
+    self.mock_get_dataset = self.enter_context(
+        mock.patch.object(
+            fewshot.vmoe.data.input_pipeline,
+            'get_dataset',
+            side_effect=lambda *a, **kw: clu.data.TfDatasetIterator(  # pylint: disable=g-long-lambda
+                dataset, checkpoint=False)))
 
   @classmethod
   def _apply_fn(cls, variables, images, rngs=None):
