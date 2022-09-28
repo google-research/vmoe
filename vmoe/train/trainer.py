@@ -28,9 +28,9 @@ import flax.serialization
 import flax.training.train_state
 import flax.traverse_util
 import jax
+from jax._src import sharding
 from jax.experimental import maps
 from jax.experimental import pjit
-from jax.experimental import sharding
 import jax.numpy as jnp
 import ml_collections
 import numpy as np

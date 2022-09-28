@@ -21,9 +21,9 @@ import os
 from typing import Any, Iterator, Iterable, Mapping, Optional, Sequence, Tuple, Union
 
 import jax
+from jax._src import sharding
 from jax.experimental import maps
 from jax.experimental import pjit
-from jax.experimental import sharding
 import numpy as np
 import vmoe.checkpoints.base
 import vmoe.checkpoints.serialization

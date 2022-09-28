@@ -68,9 +68,9 @@ from typing import Any, Optional, Sequence, Tuple, Union
 from absl import logging
 import flax.traverse_util
 import jax
+from jax._src import sharding
 from jax.experimental import maps
 from jax.experimental import pjit
-from jax.experimental import sharding
 import numpy as np
 
 AxisResourcesRegexes = Sequence[Tuple[str, 'UnparsedPartitionSpec']]
