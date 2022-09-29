@@ -281,7 +281,7 @@ def _msgpack_ext_pack(x):
     return _lazy_array_chunks_encode(x)
   if isinstance(x, IndexInfo):
     return msgpack.ExtType(_MsgpackExtType.index_info, _index_info_to_bytes(x))
-  if isinstance(x, (np.ndarray, jax.xla.DeviceArray)):
+  if isinstance(x, (np.ndarray, jax.Array)):
     return msgpack.ExtType(_MsgpackExtType.ndarray, _ndarray_to_bytes(x))
   if np.issctype(type(x)):
     return msgpack.ExtType(_MsgpackExtType.npscalar,
