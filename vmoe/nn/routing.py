@@ -28,88 +28,7 @@ KwArgs = Mapping[str, Any]
 Metrics = Mapping[str, Array]
 
 
-class BaseNoisyTopExpertsPerItemRouter(nn.Module):
-  """The Base class for tokens-choose-experts routers.
-
-  It provides the dispatcher and auxiliary losses for tokens-choose-experts
-  routers.
-  """
-  num_experts: int
-  num_selected_experts: int = 1
-  noise_std: float = 1.0
-  dispatcher: Optional[KwArgs] = None
-
-  @nn.nowrap
-  def _create_dispatcher(self, gates_softmax):
-    # Creates a dispatcher implementing the TopExpertsPerItem routing algorithm,
-    # that uses at most `num_selected_experts` per item. Notice that each
-    # group is dispatched independently.
-    dispatcher_kwargs = dict(**(self.dispatcher or {}))
-    use_bfloat16 = dispatcher_kwargs.pop("bfloat16", False)
-    get_top_experts_per_item_dispatcher_vmapped = jax.vmap(
-        functools.partial(
-            vmoe.moe.get_top_experts_per_item_dispatcher,
-            num_selected_experts=self.num_selected_experts,
-            **dispatcher_kwargs))
-    dispatcher = get_top_experts_per_item_dispatcher_vmapped(gates_softmax)
-    if use_bfloat16:
-      dispatcher = vmoe.moe.Bfloat16Dispatcher(dispatcher)
-    return dispatcher
-
-  @classmethod
-  def _gshard_auxiliary_loss(cls, gates: Array) -> Array:
-    # See `l_{aux}` in Algorithm 1 in https://arxiv.org/pdf/2006.16668.pdf.
-    _, num_experts = gates.shape
-    # Line (3) in Algorithm 1.
-    mean_gates_per_expert = gates.mean(axis=0)
-    # Lines (11, 13) in Algorithm 1.
-    mean_top1_per_expert = jax.nn.one_hot(
-        jnp.argmax(gates, axis=1), num_experts, dtype=jnp.int32).mean(axis=0)
-    # Note: Only gradients through mean_gates_per_expert affect the gating,
-    # since hard counts from top_k+one_hot are not differentiable.
-    auxiliary_loss = jnp.mean(mean_top1_per_expert * mean_gates_per_expert)
-    # Note: Not mentioned in the paper, but it's done in their source code.
-    # https://github.com/tensorflow/lingvo/blob/84b85514d7ad3652bc9720cb45acfab08604519b/lingvo/core/gshard_layers.py#L2223
-    auxiliary_loss *= num_experts**2
-    return auxiliary_loss
-
-  @classmethod
-  def _importance_auxiliary_loss(cls, gates: Array) -> Array:
-    axis = tuple(range(gates.ndim - 1))  # All except last.
-    importance_per_expert = jnp.sum(gates, axis=axis)
-    std_importance_per_expert = jnp.std(importance_per_expert)
-    mean_importance_per_expert = jnp.mean(importance_per_expert)
-    # Compute coefficient of variation (i.e. std/mean) squared.
-    return (std_importance_per_expert / mean_importance_per_expert)**2
-
-  @classmethod
-  def _load_auxiliary_loss(cls, logits: Array, logits_noisy: Array,
-                           noise_std: Array,
-                           num_selected_experts: int) -> Array:
-    # For each example, compute the weight required for an expert to be selected
-    # among the top-k.
-    # NOTE: DO NOT TRY TO SIMPLIFY THIS. This convoluted way of obtaining the
-    # threshold_per_item avoids adding all-gather ops during backpropagation.
-    num_experts = logits_noisy.shape[-1]
-    threshold_per_item_index = jax.lax.top_k(
-        logits_noisy, num_selected_experts)[-1][..., -1]
-    threshold_per_item = jnp.sum(
-        jax.nn.one_hot(threshold_per_item_index, num_experts) * logits_noisy,
-        axis=-1)
-    # For each example and expert, find how far they were from the threshold and
-    # normalize this value by the noise_std to use the standard Gaussian CDF.
-    noise_required_to_win = threshold_per_item[..., None] - logits
-    noise_required_to_win /= noise_std
-    # p is the probability of being above the threshold for each (item, expert)
-    # if the random noise (with its std) was re-sampled again.
-    p = 1. - jax.scipy.stats.norm.cdf(noise_required_to_win)
-    # We compute the average such probability for each expert over examples.
-    p_mean = jnp.mean(p, axis=0)
-    # Compute p_mean's coefficient of variation squared.
-    return (jnp.std(p_mean) / jnp.mean(p_mean))**2
-
-
-class NoisyTopExpertsPerItemRouter(BaseNoisyTopExpertsPerItemRouter):
+class NoisyTopExpertsPerItemRouter(nn.Module):
   """Noisy TopExpertsPerItem router used in https://arxiv.org/abs/2106.05974.
 
   First, a dense (i.e. the gating) layer computes logits for each pair of
@@ -194,6 +113,75 @@ class NoisyTopExpertsPerItemRouter(BaseNoisyTopExpertsPerItemRouter):
       }
       return gates_softmax_noisy, metrics
 
+  @nn.nowrap
+  def _create_dispatcher(self, gates_dispatch):
+    # Creates a dispatcher implementing the TopExpertsPerItem routing algorithm,
+    # that uses at most `num_selected_experts` per item. Notice that each
+    # group is dispatched independently.
+    dispatcher_kwargs = dict(**(self.dispatcher or {}))
+    use_bfloat16 = dispatcher_kwargs.pop("bfloat16", False)
+    get_top_experts_per_item_dispatcher_vmapped = jax.vmap(
+        functools.partial(
+            vmoe.moe.get_top_experts_per_item_dispatcher,
+            num_selected_experts=self.num_selected_experts,
+            **dispatcher_kwargs))
+    dispatcher = get_top_experts_per_item_dispatcher_vmapped(gates_dispatch)
+    if use_bfloat16:
+      dispatcher = vmoe.moe.Bfloat16Dispatcher(dispatcher)
+    return dispatcher
+
+  @classmethod
+  def _gshard_auxiliary_loss(cls, gates: Array) -> Array:
+    # See `l_{aux}` in Algorithm 1 in https://arxiv.org/pdf/2006.16668.pdf.
+    _, num_experts = gates.shape
+    # Line (3) in Algorithm 1.
+    mean_gates_per_expert = gates.mean(axis=0)
+    # Lines (11, 13) in Algorithm 1.
+    mean_top1_per_expert = jax.nn.one_hot(
+        jnp.argmax(gates, axis=1), num_experts, dtype=jnp.int32).mean(axis=0)
+    # Note: Only gradients through mean_gates_per_expert affect the gating,
+    # since hard counts from top_k+one_hot are not differentiable.
+    auxiliary_loss = jnp.mean(mean_top1_per_expert * mean_gates_per_expert)
+    # Note: Not mentioned in the paper, but it's done in their source code.
+    # https://github.com/tensorflow/lingvo/blob/84b85514d7ad3652bc9720cb45acfab08604519b/lingvo/core/gshard_layers.py#L2223
+    auxiliary_loss *= num_experts**2
+    return auxiliary_loss
+
+  @classmethod
+  def _importance_auxiliary_loss(cls, gates: Array) -> Array:
+    axis = tuple(range(gates.ndim - 1))  # All except last.
+    importance_per_expert = jnp.sum(gates, axis=axis)
+    std_importance_per_expert = jnp.std(importance_per_expert)
+    mean_importance_per_expert = jnp.mean(importance_per_expert)
+    # Compute coefficient of variation (i.e. std/mean) squared.
+    return (std_importance_per_expert / mean_importance_per_expert)**2
+
+  @classmethod
+  def _load_auxiliary_loss(cls, logits: Array, logits_noisy: Array,
+                           noise_std: Array,
+                           num_selected_experts: int) -> Array:
+    # For each example, compute the weight required for an expert to be selected
+    # among the top-k.
+    # NOTE: DO NOT TRY TO SIMPLIFY THIS. This convoluted way of obtaining the
+    # threshold_per_item avoids adding all-gather ops during backpropagation.
+    num_experts = logits_noisy.shape[-1]
+    threshold_per_item_index = jax.lax.top_k(
+        logits_noisy, num_selected_experts)[-1][..., -1]
+    threshold_per_item = jnp.sum(
+        jax.nn.one_hot(threshold_per_item_index, num_experts) * logits_noisy,
+        axis=-1)
+    # For each example and expert, find how far they were from the threshold and
+    # normalize this value by the noise_std to use the standard Gaussian CDF.
+    noise_required_to_win = threshold_per_item[..., None] - logits
+    noise_required_to_win /= noise_std
+    # p is the probability of being above the threshold for each (item, expert)
+    # if the random noise (with its std) was re-sampled again.
+    p = 1. - jax.scipy.stats.norm.cdf(noise_required_to_win)
+    # We compute the average such probability for each expert over examples.
+    p_mean = jnp.mean(p, axis=0)
+    # Compute p_mean's coefficient of variation squared.
+    return (jnp.std(p_mean) / jnp.mean(p_mean))**2
+
 
 class NoisyTopItemsPerExpertRouter(nn.Module):
   """Noisy TopItemsPerExpert router.
@@ -241,7 +229,7 @@ class NoisyTopItemsPerExpertRouter(nn.Module):
       return gates_softmax_noisy
 
   @nn.nowrap
-  def _create_dispatcher_and_metrics(self, gates_softmax):
+  def _create_dispatcher_and_metrics(self, gates_dispatch):
     # Creates a dispatcher implementing the TopItemsPerExpert routing algorithm.
     # Notice that each group is dispatched independently.
     dispatcher_kwargs = dict(**(self.dispatcher or {}))
@@ -250,7 +238,7 @@ class NoisyTopItemsPerExpertRouter(nn.Module):
         functools.partial(
             vmoe.moe.get_top_items_per_expert_dispatcher, **dispatcher_kwargs))
     dispatcher, metrics = get_top_items_per_expert_dispatcher_vmapped(
-        gates_softmax)
+        gates_dispatch)
     if use_bfloat16:
       dispatcher = vmoe.moe.Bfloat16Dispatcher(dispatcher)
     return dispatcher, metrics
