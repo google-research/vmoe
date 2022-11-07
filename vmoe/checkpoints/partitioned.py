@@ -36,9 +36,9 @@ __all__ = ['restore_checkpoint', 'save_checkpoint']
 
 Array = Union[jax.numpy.ndarray, np.ndarray]
 ArrayChunks = vmoe.checkpoints.types.ArrayChunks
-AsyncResult = vmoe.checkpoints.base.AsyncResult
 IndexInfo = vmoe.checkpoints.types.IndexInfo
 LazyArrayChunks = vmoe.checkpoints.types.LazyArrayChunks
+MapResult = vmoe.checkpoints.base.MapResult
 Mesh = maps.Mesh
 MeshPspecSharding = sharding.MeshPspecSharding
 ParsedPartitionSpec = pjit.ParsedPartitionSpec
@@ -218,7 +218,7 @@ def save_checkpoint(*,
                     overwrite: bool = True,
                     makedirs: bool = True,
                     thread_pool: Optional[ThreadPool] = None,
-                    version: Version = Version.V1) -> AsyncResult:
+                    version: Version = Version.V1) -> MapResult:
   """Saves a PyTree of partitioned arrays into a sharded checkpoint.
 
   Args:
@@ -241,7 +241,7 @@ def save_checkpoint(*,
       WHAT YOU ARE DOING.
 
   Returns:
-    An AsyncResult object.
+    A MapResult object.
   """
   # We convert the tree (and axis_resource) to a pure nested dictionary here.
   # Before Version.V1, this was done implicitly in the subsequent calls to the

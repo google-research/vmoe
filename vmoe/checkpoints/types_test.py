@@ -119,18 +119,17 @@ class LazyArrayChunksTest(absltest.TestCase):
                           SliceNd(Slice(2), Slice(2)))
     lazy_array_chunks.add(2, x, SliceNd(Slice(1), Slice()),
                           SliceNd(Slice(3), Slice(3)))
-    self.assertLen(lazy_array_chunks.ndarray, 1)
-    np.testing.assert_array_equal(lazy_array_chunks.ndarray.get(2), x)
-    self.assertEqual(
-        lazy_array_chunks.local_slices.get(2),
-        [SliceNd(Slice(2), Slice()), SliceNd(Slice(1), Slice())])
-    self.assertEqual(
-        lazy_array_chunks.global_slices.get(2),
-        [SliceNd(Slice(2), Slice(2)), SliceNd(Slice(3), Slice(3))])
-    # This raises an exception because the ndarray assigned to index 2 is not
-    # the same as before (although they are equal).
-    with self.assertRaises(AssertionError):
-      lazy_array_chunks.add(2, np.ones((5, 4)), SliceNd(), SliceNd())
+    self.assertLen(lazy_array_chunks.chunks, 1)
+    self.assertIn(2, lazy_array_chunks.chunks)
+    self.assertLen(lazy_array_chunks.chunks.get(2), 2)
+    data, local_slice, global_slice = lazy_array_chunks.chunks.get(2)[0]
+    np.testing.assert_array_equal(data, x)
+    self.assertEqual(local_slice, SliceNd(Slice(2), Slice()))
+    self.assertEqual(global_slice, SliceNd(Slice(2), Slice(2)))
+    data, local_slice, global_slice = lazy_array_chunks.chunks.get(2)[1]
+    np.testing.assert_array_equal(data, x)
+    self.assertEqual(local_slice, SliceNd(Slice(1), Slice()))
+    self.assertEqual(global_slice, SliceNd(Slice(3), Slice(3)))
 
   def test_iter_chunks(self):
     lazy_array_chunks = LazyArrayChunks()

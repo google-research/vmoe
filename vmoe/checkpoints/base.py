@@ -23,7 +23,8 @@ from typing import Any, Callable, Iterable, Iterator, Sequence, Mapping, Optiona
 from tensorflow.io import gfile
 from vmoe.checkpoints import serialization
 
-AsyncResult = multiprocessing.pool.AsyncResult
+ApplyResult = multiprocessing.pool.ApplyResult
+MapResult = multiprocessing.pool.MapResult
 ThreadPool = multiprocessing.pool.ThreadPool
 
 # Allows checkpoints patterns such as:
@@ -170,7 +171,7 @@ def save_checkpoint_async(
     *,
     overwrite: bool = True,
     makedirs: bool = True,
-    thread_pool: Optional[ThreadPool] = None) -> AsyncResult:
+    thread_pool: Optional[ThreadPool] = None) -> ApplyResult[str]:
   """Saves the given PyTree in the given location, asynchronously."""
   thread_pool = thread_pool or ThreadPool()
   return thread_pool.apply_async(
@@ -184,7 +185,7 @@ def save_multiple_checkpoints_async(
     *,
     overwrite: bool = True,
     makedirs: bool = True,
-    thread_pool: Optional[ThreadPool] = None) -> AsyncResult:
+    thread_pool: Optional[ThreadPool] = None) -> MapResult:
   thread_pool = thread_pool or ThreadPool()
   fn = functools.partial(
       save_checkpoint, overwrite=overwrite, makedirs=makedirs)

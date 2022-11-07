@@ -220,7 +220,7 @@ def _lazy_array_chunks_encode(
     return [subchunks, global_slice]
 
   state = {_ARRAY_CHUNKS_MAGIC_KEY: True}
-  for array_index in lazy_array_chunks.ndarray.keys():
+  for array_index in lazy_array_chunks.chunks.keys():
     state[str(array_index)] = list(
         map(_encode_chunk, lazy_array_chunks.iter_chunks(array_index)))
   return state

@@ -18,7 +18,7 @@ To see the details of the serialization, check serialization.py.
 """
 import collections
 import dataclasses
-from typing import Dict, List, Optional, Sequence, Tuple, Union
+from typing import Dict, List, Iterator, Optional, Sequence, Tuple, Union
 
 import jax
 import numpy as np
@@ -150,7 +150,10 @@ class ArrayChunks:
     self.chunks[index].append(chunk)
     self.global_slices[index].append(global_slice)
 
-  def iter_chunks(self, index: int):
+  def has_index(self, index: int) -> bool:
+    return index in self.chunks
+
+  def iter_chunks(self, index: int) -> Iterator[Tuple[Array, SliceNd]]:
     chunks = self.chunks.get(index)
     global_slices = self.global_slices.get(index)
     if chunks is None or global_slices is None:
@@ -161,28 +164,17 @@ class ArrayChunks:
 @dataclasses.dataclass
 class LazyArrayChunks:
   """A lazy version of ArrayChunks, to avoid multiple copies of the data."""
-  ndarray: Dict[int, Array] = dataclasses.field(default_factory=dict)
-  local_slices: Dict[int, List[SliceNd]] = ddlist_field()
-  global_slices: Dict[int, List[SliceNd]] = ddlist_field()
+  chunks: Dict[int, List[Tuple[Array, SliceNd, SliceNd]]] = ddlist_field()
 
   def add(self, index: int, ndarray: Array, local_slice: SliceNd,
           global_slice: SliceNd):
-    curr_ndarray = self.ndarray.get(index)
-    if curr_ndarray is None:
-      self.ndarray[index] = ndarray  # pylint: disable=unsupported-assignment-operation
-    else:
-      assert curr_ndarray is ndarray, f'{id(curr_ndarray)} vs. {id(ndarray)}'
-    self.local_slices[index].append(local_slice)
-    self.global_slices[index].append(global_slice)
+    self.chunks[index].append((ndarray, local_slice, global_slice))
 
-  def iter_chunks(self, index: int):
-    ndarray = self.ndarray.get(index)
-    local_slices = self.local_slices.get(index)
-    global_slices = self.global_slices.get(index)
-    if ndarray is None or local_slices is None or global_slices is None:
+  def iter_chunks(self, index: int) -> Iterator[Tuple[Array, SliceNd]]:
+    if index not in self.chunks:
       raise KeyError(f'Index {index} not found.')
-    return vmoe.utils.safe_map(lambda loc, glo: (loc.chunk(ndarray), glo),
-                               local_slices, global_slices)
+    chunks = self.chunks[index]
+    return vmoe.utils.safe_map(lambda c: (c[1].chunk(c[0]), c[2]), chunks)
 
 
 @dataclasses.dataclass

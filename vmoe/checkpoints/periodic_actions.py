@@ -25,7 +25,7 @@ from vmoe.checkpoints import base as checkpoints_base
 from vmoe.checkpoints import partitioned as checkpoints_partitioned
 
 
-AsyncResult = checkpoints_partitioned.AsyncResult
+MapResult = checkpoints_partitioned.MapResult
 Mesh = checkpoints_partitioned.Mesh
 PyTree = checkpoints_partitioned.PyTree
 ThreadPool = checkpoints_partitioned.ThreadPool
@@ -96,7 +96,7 @@ class PeriodicSaveCheckpoint(periodic_actions.PeriodicCallback):
       report_progress_name: Name used by `ReportProgress.timed()`.
     """
     self._thread_pool = ThreadPool(processes=num_threads)
-    self._async_result = None  # type: Optional[AsyncResult]
+    self._async_result = None  # type: Optional[MapResult]
     self._wait_seconds = wait_seconds
     self._makedirs(os.path.dirname(prefix))
     keep_last = max(keep_last or 1, 1)
