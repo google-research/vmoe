@@ -76,7 +76,7 @@ import numpy as np
 AxisResourcesRegexes = Sequence[Tuple[str, 'UnparsedPartitionSpec']]
 Device = jax.lib.xla_client.Device
 Mesh = maps.Mesh
-MeshPspecSharding = sharding.MeshPspecSharding
+NamedSharding = sharding.NamedSharding
 PartitionSpec = pjit.PartitionSpec
 PyTree = Any
 TpuCoords = Tuple[int, int, int, int]
@@ -418,7 +418,7 @@ def tree_global_shape(tree: PyTree, axis_resources: PyTree,
     raise ValueError(f'The tree structs do not match.\n'
                      f'tree: {struct}\n'
                      f'resource_axis: {struct2}')
-  shardings = [MeshPspecSharding(mesh, spec) for spec in axis_resources_leaves]
+  shardings = [NamedSharding(mesh, spec) for spec in axis_resources_leaves]
   if not all(
       hasattr(x, 'aval') or (hasattr(x, 'shape') and hasattr(x, 'dtype'))
       for x in tree_leaves):

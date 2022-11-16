@@ -57,7 +57,7 @@ ArraySpecDict = input_pipeline.ArraySpecDict
 AsyncResult = multiprocessing.pool.AsyncResult
 DatasetIterator = input_pipeline.DatasetIterator
 Mesh = partitioning.Mesh
-MeshPspecSharding = sharding.MeshPspecSharding
+NamedSharding = sharding.NamedSharding
 PartitionSpec = partitioning.PartitionSpec
 PeriodicCheckpointSaver = checkpoints_periodic_actions.PeriodicSaveCheckpoint
 PRNGKey = Union[jax.numpy.ndarray, jax.random.KeyArray]
@@ -773,7 +773,7 @@ def tree_global_to_local_shape(tree, axis_resources, mesh):
                      f'axis_resources: {struct_axis_resources}')
   global_shapes = [jax.ShapedArray(x.shape, x.dtype) for x in leaves]
   positional_semantics = [_PositionalSemantics.LOCAL for _ in global_shapes]
-  shardings = [MeshPspecSharding(mesh, spec) for spec in axis_resources]
+  shardings = [NamedSharding(mesh, spec) for spec in axis_resources]
   shardings = [
       pjit.to_op_sharding_sharding(s, a.ndim)
       for a, s in zip(global_shapes, shardings)

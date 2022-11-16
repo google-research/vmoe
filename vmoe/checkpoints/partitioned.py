@@ -40,7 +40,7 @@ IndexInfo = vmoe.checkpoints.types.IndexInfo
 LazyArrayChunks = vmoe.checkpoints.types.LazyArrayChunks
 MapResult = vmoe.checkpoints.base.MapResult
 Mesh = maps.Mesh
-MeshPspecSharding = sharding.MeshPspecSharding
+NamedSharding = sharding.NamedSharding
 ParsedPartitionSpec = pjit.ParsedPartitionSpec
 PartitionSpec = pjit.PartitionSpec
 PyTree = Any
@@ -154,7 +154,7 @@ def _restore_checkpoint_from_index(
   # This indicates the shape and type of all the arrays in the tree to restore.
   global_avals = [x.global_shape for x in index]
   positional_semantics = [_PositionalSemantics.LOCAL for _ in global_avals]
-  shardings = [MeshPspecSharding(mesh, spec) for spec in axis_resources]
+  shardings = [NamedSharding(mesh, spec) for spec in axis_resources]
   parsed_axis_resources = [spec._parsed_pspec for spec in shardings]  # pylint: disable=protected-access
   shardings = [
       pjit.to_op_sharding_sharding(s, a.ndim)
@@ -397,7 +397,7 @@ def _make_save_checkpoint_filepath_map(
       for x in tree_leaves
   ]
   positional_semantics = [_PositionalSemantics.LOCAL for _ in local_avals]
-  shardings = [MeshPspecSharding(mesh, spec) for spec in axis_resources]
+  shardings = [NamedSharding(mesh, spec) for spec in axis_resources]
   parsed_axis_resources = [spec._parsed_pspec for spec in shardings]  # pylint: disable=protected-access
   shardings = [
       pjit.to_op_sharding_sharding(s, a.ndim)
