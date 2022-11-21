@@ -17,7 +17,6 @@
 Most of these were originally implemented by: Lucas Beyer, Alex Kolesnikov,
 Xiaohua Zhai and other collaborators from Google Brain Zurich.
 """
-import ast
 from typing import Any, Callable, Dict, Optional, Union
 
 from clu.data import dataset_iterator
@@ -26,6 +25,7 @@ import ml_collections
 import tensorflow as tf
 import vmoe.data.builder
 import vmoe.data.pp_ops
+import vmoe.utils
 
 DEFAULT_SHUFFLE_BUFFER = 50_000
 VALID_KEY = '__valid__'
@@ -167,58 +167,9 @@ def get_data_process_fn(process_str: str) -> Callable[[Data], Data]:
   """
   ops = []
   for op_str in process_str.split('|'):
-    op_name, op_args, op_kwargs = _parse_process_op_str(op_str)
-    op_fn = getattr(vmoe.data.pp_ops, op_name)(*op_args, **op_kwargs)
-    ops.append(op_fn)
-
+    op_fn, op_args, op_kwargs = vmoe.utils.parse_call(op_str, vmoe.data.pp_ops)
+    ops.append(op_fn(*op_args, **op_kwargs))
   return _compose_fns(*ops)
-
-
-def _parse_process_op_str(string_to_parse):
-  """Parses a process operation string.
-
-  Args:
-    string_to_parse: can be either an arbitrary name or function call
-      (optionally with positional and keyword arguments).
-
-  Returns:
-    A tuple of input name, argument tuple and a keyword argument dictionary.
-    Examples:
-      "flip_lr" -> ("flip_lr", (), {})
-      "onehot(25, on=1, off=-1)" -> ("onehot", (25,), {"on": 1, "off": -1})
-  """
-  expr = ast.parse(string_to_parse, mode='eval').body  # pytype: disable=attribute-error
-  if not isinstance(expr, (ast.Call, ast.Name)):
-    raise ValueError(
-        f'The given string should be a name or a call, but a {type(expr)} was '
-        f'parsed from the string {string_to_parse!r}')
-  # Notes:
-  # name="some_name" -> type(expr) = ast.Name
-  # name="module.some_name" -> type(expr) = ast.Attribute
-  # name="some_name()" -> type(expr) = ast.Call
-  # name="module.some_name()" -> type(expr) = ast.Call
-  if isinstance(expr, ast.Name):
-    return string_to_parse, (), {}
-
-  def _get_func_name(expr):
-    if isinstance(expr, ast.Name):
-      return expr.id
-    else:
-      raise ValueError(
-          f'Type {type(expr)} is not supported in a function name, the string '
-          f'to parse was {string_to_parse!r}')
-
-  def _get_func_args_and_kwargs(call):
-    args = tuple([ast.literal_eval(arg) for arg in call.args])
-    kwargs = {
-        kwarg.arg: ast.literal_eval(kwarg.value) for kwarg in call.keywords
-    }
-    return args, kwargs
-
-  func_name = _get_func_name(expr.func)
-  func_args, func_kwargs = _get_func_args_and_kwargs(expr)
-
-  return func_name, func_args, func_kwargs
 
 
 def _compose_fns(*fns):

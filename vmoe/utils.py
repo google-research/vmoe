@@ -13,10 +13,12 @@
 # limitations under the License.
 
 """Module with several util functions."""
+import ast
 import collections.abc
 import functools
+import importlib
 import re
-from typing import Any, Callable, Dict, Iterator, Optional, Sequence, Tuple, Type
+from typing import Any, Callable, Dict, Iterator, Optional, Sequence, Tuple, Type, Union
 import jax
 import jax.numpy as jnp
 
@@ -44,6 +46,59 @@ def multiply_no_nan(x, y):
   safe_x = jnp.where(x_ok, x, 1.)
   safe_y = jnp.where(x_ok, y, 1.)
   return jnp.where(x_ok, jax.lax.mul(safe_x, safe_y), jnp.zeros_like(x))
+
+
+def parse_call(string: str, default_module: Union[str, Any]):
+  """Parses a string representing a call.
+
+  Examples:
+    - parse_call('foo', module): Returns (module.foo, (), {}).
+    - parse_call('foo(25)', module): Returns (module.foo, (25,), {}).
+    - parse_call('foo.bar.baz', module): Returns ('foo.bar.baz', (), {}).
+
+  Args:
+    string: This can be either a name (it assumes no arguments) or a call string
+      including the positional and keyword arguments. The call cannot include
+      nested calls (e.g. "foo.bar().baz()" is not allowed). The optional args
+      must be Python literals.
+    default_module: Default module to use to import the function.
+
+  Returns:
+    Returns the callable (e.g. a class or function), a tuple of positional args,
+    and a dictionary of keyword arguments.
+  """
+  expr = ast.parse(string, mode='eval').body
+  if isinstance(expr, ast.Call):
+    # Parses the positional and keyword arguments in strings like:
+    # "foo.bar.baz(a, b=c)".
+    args = tuple([ast.literal_eval(arg) for arg in expr.args])
+    kwargs = {
+        kwarg.arg: ast.literal_eval(kwarg.value) for kwarg in expr.keywords
+    }
+    # Prepare to process the rest of the expression (e.g. "foo.bar.baz").
+    expr = expr.func
+  else:
+    args, kwargs = (), {}
+  if isinstance(expr, ast.Name):
+    # After the (optional) call arguments, the expression is a name: e.g. "foo".
+    module = default_module
+    name = expr.id
+  elif isinstance(expr, ast.Attribute):
+    name = expr.attr
+    expr = expr.value
+    module = string[:expr.end_col_offset]
+    # We check that the expression is something like:
+    # "name.attribute_1.....attribute_n".
+    # For instance, something like "foo.bar().baz" is not be accepted.
+    while not isinstance(expr, ast.Name):
+      if not isinstance(expr, ast.Attribute):
+        raise ValueError(f'{string=!r} is not a supported callable string.')
+      expr = expr.value
+  else:
+    raise ValueError(f'{string=!r} is not a supported callable string.')
+  if isinstance(module, str):
+    module = importlib.import_module(module)
+  return getattr(module, name), args, kwargs
 
 
 def partialclass(cls: Type[Any], *base_args, **base_kwargs):

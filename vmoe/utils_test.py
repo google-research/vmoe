@@ -16,9 +16,31 @@
 import dataclasses
 
 from absl.testing import absltest
+from absl.testing import parameterized
 import jax
 import numpy as np
 from vmoe import utils
+
+
+class ParseCallTest(parameterized.TestCase):
+
+  @parameterized.named_parameters(
+      ('_name', 'parse_call', 'vmoe.utils', utils.parse_call, (), {}),
+      ('_attribute', 'numpy.ceil', 'foo', np.ceil, (), {}),
+  )
+  def test(self, string, default_module, expect_obj, expect_args, expect_kwarg):
+    obj, args, kwargs = utils.parse_call(string, default_module)
+    self.assertIs(obj, expect_obj)
+    self.assertEqual(args, expect_args)
+    self.assertEqual(kwargs, expect_kwarg)
+
+  @parameterized.named_parameters(
+      ('expression', '2 + 2', 'foo'),
+      ('callable_in_attribute', 'foo(16).bar.baz', 'foo'),
+  )
+  def test_raises(self, string, default_module):
+    with self.assertRaises(ValueError):
+      utils.parse_call(string, default_module)
 
 
 class UtilsTest(absltest.TestCase):
