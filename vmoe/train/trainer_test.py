@@ -25,6 +25,7 @@ import jax
 import jax.numpy as jnp
 import ml_collections
 import numpy as np
+import optax
 import tensorflow as tf
 from vmoe.train import trainer
 
@@ -523,6 +524,66 @@ class TrainAndEvaluateTest(parameterized.TestCase):
     mock_get_datasets.return_value = {}
     with self.assertRaisesRegex(KeyError, 'You must have a "train" variant'):
       trainer.train_and_evaluate(config=config, workdir=workdir)
+
+
+class WrapTrainStepWithAdversarialAttackTest(parameterized.TestCase):
+
+  @classmethod
+  def apply_fn(cls, variables, inputs, rngs):
+    del rngs
+    outputs = inputs * variables['params']['w']
+    metrics = {'auxiliary_loss': jnp.square(outputs).sum()}
+    return outputs, metrics
+
+  @classmethod
+  def loss_fn(cls, a, b):
+    return jnp.square(a - b).sum()
+
+  @classmethod
+  def train_step_fn(cls, state, inputs, targets):
+    @jax.grad
+    def compute_grads(params):
+      outputs, _ = state.apply_fn({'params': params}, inputs, rngs=state.rngs)
+      return cls.loss_fn(outputs, targets)
+    grads = compute_grads(state.params)
+    return state.apply_gradients(grads=grads), {}
+
+  # We are solving a linear regression problem with a single weight (initial
+  # weight w = 1): (x * w - y)^2. x = [-1, 0, +1], y = [-2, 0, +2].
+  @parameterized.named_parameters(
+      # Gradient of the loss w.r.t the inputs (at w = 1): [+2, 0, -2].
+      # The adversarial attack (without auxiliary loss) changes the input to:
+      # [-1, 0, +1] + 0.1 * [+1, 0, -1] = [-.9, 0, +.9].
+      # Gradient of the loss w.r.t the weight with the resulting inputs:
+      # 2 * (- 0.9 * 1.1) = -3.96.
+      # SGD updates the parameter to: 1 - 0.1 * (-3.96) = 1.396
+      ('_no_attack_aux', False, 1.396),
+      # Gradient of the loss w.r.t the inputs (at w = 1): [+2, 0, -2].
+      # Gradient of the auxiliary loss w.r.t the inputs (at w = 1): [-2, 0, +2].
+      # The adversarial attack (which also attacks the aux loss) changes the
+      # input to:
+      # [-1, 0, +1] + 0.1 * sign([+2, 0, -2] + [+2, 0, -2]) = [-1, 0, +1].
+      # Gradient of the loss w.r.t. the weight with the resulting inputs:
+      # 2 * (- 1 * 2) = -4.
+      # SGD updates the parameter to: 1 - 0.1 * (-4.) = 1.4
+      ('_attack_aux', True, 1.4)
+  )
+  def test(self, attack_auxiliary_loss, expected_weight):
+    wrapped_train_step_fn = trainer.wrap_train_step_with_adversarial_attack(
+        train_step_fn=self.train_step_fn, loss_fn=self.loss_fn,
+        max_epsilon=0.1, num_updates=10,
+        attack_auxiliary_loss=attack_auxiliary_loss)
+    wrapped_train_step_fn = jax.jit(wrapped_train_step_fn)
+
+    state = trainer.TrainState.create(
+        apply_fn=self.apply_fn,
+        params={'w': np.ones((1,), dtype=np.float32)},
+        tx=optax.sgd(0.1),
+        rngs={})
+    inputs = np.asarray([-1., 0., 1.], dtype=np.float32)
+    targets = np.asarray([-2, 0., 2.], dtype=np.float32)
+    new_state, _ = wrapped_train_step_fn(state, inputs, targets)
+    self.assertAlmostEqual(new_state.params['w'], expected_weight)
 
 
 class WrapTrainStepWithMixupTest(parameterized.TestCase):

@@ -46,6 +46,7 @@ from vmoe.evaluate import ensemble
 from vmoe.evaluate import evaluator
 from vmoe.evaluate import fewshot
 from vmoe.nn import models
+from vmoe.projects.adversarial_attacks import attacks as adversarial_attacks
 from vmoe.train import initialization
 from vmoe.train import optimizer
 from vmoe.train import periodic_actions as train_periodic_actions
@@ -667,6 +668,10 @@ def _train_and_evaluate(config: ml_collections.ConfigDict, workdir: str,
       train_step,
       loss_fn=train_loss_fn,
       plot_grad_norm_name_fn=plot_grad_norm_name_fn)
+  if config.get('adversarial', {}):
+    adversarial_config = config.adversarial.to_dict()
+    train_step_fn = wrap_train_step_with_adversarial_attack(
+        train_step_fn, train_loss_fn, **adversarial_config)
   # If mixup options are defined, wrap the train_step_fn with mixup.
   if config.get('mixup', {}):
     mixup_config = config.mixup.to_dict()
@@ -784,6 +789,54 @@ def tree_global_to_local_shape(tree, axis_resources, mesh):
       jax.ShapeDtypeStruct(shape=s.shape, dtype=s.dtype)
       for s in local_shapes
   ])
+
+
+def wrap_train_step_with_adversarial_attack(
+    train_step_fn: TrainStepFn,
+    loss_fn: Callable[[jnp.ndarray, jnp.ndarray], jnp.ndarray],
+    *,
+    attack_auxiliary_loss: bool,
+    max_epsilon: float,
+    num_updates: int,
+) -> TrainStepFn:
+  """Wraps a train_step_fn to perform PGD adversarial training.
+
+  Arguments:
+    train_step_fn: Training step function to wrap.
+    loss_fn: Loss function to attack.
+    attack_auxiliary_loss: Whether to attack the MoE auxiliary loss or not.
+    max_epsilon: Maximum change for each pixel.
+    num_updates: Number of PGD updates to perform in the attack.
+
+  Returns:
+    A new train_step_fn.
+  """
+  if num_updates <= 0 or max_epsilon <= 0.0:
+    return train_step_fn
+
+  def loss_with_auxiliary_attack_fn(logits, labels, metrics):
+    loss = loss_fn(logits, labels)
+    if attack_auxiliary_loss:
+      loss = loss + jnp.mean(metrics['auxiliary_loss'])
+    return loss
+
+  def new_train_step_fn(
+      state: TrainState,
+      images: jnp.ndarray,
+      labels: jnp.ndarray,
+      *args,
+      **kwargs,
+  ) -> Tuple[TrainState, Mapping[str, Any]]:
+    def apply_fn(x, **kwargs):
+      return state.apply_fn({'params': state.params}, x, **kwargs)
+    images, rngs = adversarial_attacks.stateless_attack_pgd(
+        images=images, labels=labels, rngs=state.rngs, apply_fn=apply_fn,
+        loss_fn=loss_with_auxiliary_attack_fn, max_epsilon=max_epsilon,
+        num_updates=num_updates)
+    state = state.replace(rngs=rngs)
+    return train_step_fn(state, images, labels, *args, **kwargs)
+
+  return new_train_step_fn
 
 
 def wrap_train_step_with_mixup(
