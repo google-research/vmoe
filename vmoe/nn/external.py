@@ -29,7 +29,7 @@ class MlpMixer(models_mixer.MlpMixer):
     super().__post_init__()
 
   @nn.compact
-  def __call__(self, inputs):
+  def __call__(self, inputs):  # pytype: disable=signature-mismatch  # overriding-parameter-name-checks
     return super().__call__(inputs, train=not self.deterministic), {}
 
 
@@ -45,5 +45,5 @@ class VisionTransformer(models_vit.VisionTransformer):
     super().__post_init__()
 
   @nn.compact
-  def __call__(self, inputs):
+  def __call__(self, inputs):  # pytype: disable=signature-mismatch  # overriding-parameter-name-checks
     return super().__call__(inputs, train=not self.deterministic), {}
