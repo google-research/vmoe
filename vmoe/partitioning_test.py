@@ -52,7 +52,7 @@ class PartitioningTest(parameterized.TestCase):
     def mk_dev(process_index):
       return _make_device(process_index=process_index)
     devices = np.asarray(devices)
-    devices = np.vectorize(mk_dev, otypes=[np.object])(devices)
+    devices = np.vectorize(mk_dev, otypes=[object])(devices)
     self.assertEqual(
         partitioning.processes_have_contiguous_device_slices(devices),
         expected)
@@ -186,7 +186,7 @@ class PartitioningTest(parameterized.TestCase):
         [[[devices[1], devices[7]],
           [devices[3], devices[9]],
           [devices[5], devices[11]]]]
-    ], dtype=np.object)
+    ], dtype=object)
     np.testing.assert_array_equal(hardware_mesh, expected_hardware_mesh)
 
   def test_get_logical_mesh_default(self):
@@ -368,7 +368,7 @@ def _make_tree_axis_resources_mesh_test_data():
   # simplify the calculation of global shapes of the arrays.
   devices = np.asarray(
       [_make_device(process_index=idx, id=idx) for idx in range(24)],
-      dtype=np.object).reshape(4, 3, 2)
+      dtype=object).reshape(4, 3, 2)
   mesh = partitioning.Mesh(devices, axis_names=('a', 'b', 'c'))
   # These shapes are those of the arrays in the process running the code
   # (i.e. process_index=0).

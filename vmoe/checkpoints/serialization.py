@@ -199,7 +199,7 @@ def _slice_nd_array_to_bytes(x: SliceNdArray) -> bytes:
 def _slice_nd_array_from_bytes(data: bytes) -> SliceNdArray:
   shape, slice_nd_bytes = msgpack.unpackb(data, raw=True)
   slice_nd = tuple(map(_slice_nd_from_bytes, slice_nd_bytes))
-  slice_nd_array = np.empty(len(slice_nd), dtype=np.object)
+  slice_nd_array = np.empty(len(slice_nd), dtype=object)
   for i, array_slice in enumerate(slice_nd):
     slice_nd_array[i] = array_slice
   return SliceNdArray(slice_nd_array.reshape(shape))

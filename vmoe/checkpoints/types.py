@@ -113,7 +113,7 @@ class SliceNdArray(np.ndarray):
              shape: Optional[Tuple[int, ...]] = None,
              tile: Optional[Tuple[int, ...]] = None) -> 'SliceNdArray':
     """Creates a SliceNdArray from a sequence of SliceNds."""
-    array = np.empty(len(slices), dtype=np.object)
+    array = np.empty(len(slices), dtype=object)
     for i, slice_axes in enumerate(slices):
       array[i] = SliceNd(slice_axes)
     if shape:

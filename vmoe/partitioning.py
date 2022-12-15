@@ -202,7 +202,7 @@ def get_hardware_mesh_other(devices: Sequence[Device]) -> np.ndarray:
   """Returns a 2-dim array with the CPU/GPU hardware mesh."""
   mesh_dict = {get_device_coords_other(device): device for device in devices}
   nd, nh = map(lambda x: x + 1, sorted(mesh_dict.keys())[-1])
-  mesh = np.empty((nd, nh), dtype=np.object)
+  mesh = np.empty((nd, nh), dtype=object)
   for (d, h), device in mesh_dict.items():
     mesh[(d, h)] = device
   return mesh
@@ -212,7 +212,7 @@ def get_hardware_mesh_tpu(devices: Sequence[Device]) -> np.ndarray:
   """Returns a 4-dim array with the TPU hardware mesh."""
   mesh_dict = {get_device_coords_tpu(device): device for device in devices}
   nc, nx, ny, nz = map(lambda x: x + 1, sorted(mesh_dict.keys())[-1])
-  mesh = np.empty((nc, nx, ny, nz), dtype=np.object)
+  mesh = np.empty((nc, nx, ny, nz), dtype=object)
   for (c, x, y, z), device in mesh_dict.items():
     mesh[(c, x, y, z)] = device
   return mesh
@@ -320,14 +320,14 @@ def log_logical_mesh(mesh: Mesh, *, logger=logging):
       '(' + ', '.join(f.format(c) for c, f in zip(coord, coord_fmt)) + ')'
       for coord in coords
   ]
-  coords = np.array(coords, dtype=np.object)
+  coords = np.array(coords, dtype=object)
   coords = coords.reshape(mesh.devices.shape)
   # Format process_index of each device in the mesh.
   process_index = np.vectorize(
       lambda device: device.process_index, otypes=[int])(mesh.devices)
   process_index_fmt = f'[{{:>{_ndig(np.max(process_index) + 1)}}}]'
   process_index = np.vectorize(
-      process_index_fmt.format, otypes=[np.object])(process_index)
+      process_index_fmt.format, otypes=[object])(process_index)
   ndim = mesh.devices.ndim
   if ndim == 1:
     coords = np.expand_dims(coords, axis=-1)

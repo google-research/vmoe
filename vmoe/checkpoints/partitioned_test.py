@@ -50,7 +50,7 @@ class MakeSliceNdArrayTest(absltest.TestCase):
          _make_device(process_index=3, id=6)],
         [_make_device(process_index=1, id=3),
          _make_device(process_index=3, id=7)],
-    ], dtype=np.object)
+    ], dtype=object)
     mesh = Mesh(devices, ('a', 'b'))
     aval = jax.ShapedArray((16, 8, 3), dtype=jnp.float32)
     partition_spec = partitioned.ParsedPartitionSpec.from_user_input(
