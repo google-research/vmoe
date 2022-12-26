@@ -106,7 +106,7 @@ class FewShotPeriodicActionTest(absltest.TestCase):
     valid = np.concatenate([
         np.ones((3, 16)),
         np.concatenate([np.ones((1, 12)), np.zeros((1, 4))], axis=1),
-    ], axis=0).astype(np.bool)
+    ], axis=0).astype(bool)
     dataset = tf.data.Dataset.from_tensor_slices({
         'image': images,
         'label': labels,

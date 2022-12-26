@@ -251,7 +251,7 @@ class GetTopItemsPerExpertTest(parameterized.TestCase):
         dispatcher.dispatch_weights,
         np.asarray([[[0, 1], [0, 0], [0, 0]],
                     [[1, 0], [0, 1], [0, 1]],
-                    [[0, 0], [1, 0], [1, 0]]], dtype=np.bool))
+                    [[0, 0], [1, 0], [1, 0]]], dtype=bool))
     np.testing.assert_array_almost_equal(
         dispatcher.combine_weights,
         np.asarray([[[.0, .4], [.0, .0], [.0, .0]],
