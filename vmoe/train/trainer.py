@@ -576,7 +576,8 @@ def train_step(
     images: Array,
     labels: Array,
     loss_fn: Callable[[Array, Array], Array],
-    plot_grad_norm_name_fn: Optional[Callable[[str], bool]] = None,
+    plot_norm_grad_fn: Optional[Callable[[str], bool]] = None,
+    plot_norm_train_state_fn: Optional[Callable[[str], bool]] = None,
 ) -> Tuple[TrainState, Mapping[str, Any]]:
   """Performs one update step of the given TrainState object ."""
   rngs, next_rngs = utils.tree_rngs_split(state.rngs)
@@ -592,15 +593,29 @@ def train_step(
     return total_loss, metrics
 
   grads, metrics = compute_grads_and_metrics(state.params)
+  # Update train state.
+  state = state.apply_gradients(grads=grads, rngs=next_rngs)
 
-  if plot_grad_norm_name_fn:
+  if plot_norm_grad_fn:
     # Compute norm of selected parameters and add them as auxiliary metrics.
     metrics.update({
-        f'grads_norm/{name}': jnp.sqrt(jnp.vdot(grad, grad))
+        f'norm_grads/{name}': jnp.sqrt(jnp.vdot(grad, grad))
         for name, grad in flax.traverse_util.flatten_dict(
-            grads, sep='/').items() if plot_grad_norm_name_fn(name)
+            grads, sep='/').items() if plot_norm_grad_fn(name)
     })
-  return state.apply_gradients(grads=grads, rngs=next_rngs), metrics
+
+  if plot_norm_train_state_fn:
+    # Compute the norm of selected arrays in the train state and add them as
+    # auxiliary metrics. This is useful to plot the norm of the values of
+    # parameters, the current learning rate or any other internal state.
+    metrics.update({
+        f'norm_train_state/{name}': jnp.sqrt(jnp.vdot(value, value))
+        for name, value in flax.traverse_util.flatten_dict(
+            flax.serialization.to_state_dict(state), sep='/').items()
+        if plot_norm_train_state_fn(name)
+    })
+
+  return state, metrics
 
 
 def train_and_evaluate(config: ml_collections.ConfigDict, workdir: str):
@@ -662,12 +677,15 @@ def _train_and_evaluate(config: ml_collections.ConfigDict, workdir: str,
       initialization_kwargs=config.get('initialization'))
   init_step = int(train_state.step)
   train_loss_fn, eval_loss_fn, label_pred_fn = get_loss_fn(**config.loss)
-  plot_grad_norm_name_fn = utils.make_match_fn_from_regex_list(
-      config.get('plot_grad_norm_patterns'))
+  plot_norm_grad_fn = utils.make_match_fn_from_regex_list(
+      config.get('plot_norm_grad_patterns'))
+  plot_norm_train_state_fn = utils.make_match_fn_from_regex_list(
+      config.get('plot_norm_train_state_patterns'))
   train_step_fn = functools.partial(
       train_step,
       loss_fn=train_loss_fn,
-      plot_grad_norm_name_fn=plot_grad_norm_name_fn)
+      plot_norm_grad_fn=plot_norm_grad_fn,
+      plot_norm_train_state_fn=plot_norm_train_state_fn)
   if config.get('adversarial', {}):
     adversarial_config = config.adversarial.to_dict()
     train_step_fn = wrap_train_step_with_adversarial_attack(

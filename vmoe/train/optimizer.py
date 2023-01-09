@@ -104,8 +104,7 @@ def create_optimizer(
   # WARNING: Use this with caution. Notice that this is NOT equivalent to having
   # a specific learning rate per parameter, since the scale that you use here
   # will affect the state of the optimizers like momentum.
-  if gradient_scale:
-    ops.append(gradient_scaling(gradient_scale))
+  ops.append(gradient_scaling(gradient_scale))
   # Optionally, add gradient clipping.
   ops.append(gradient_clipping(**(gradient_clip or {})))
   # Optimizer-dependant scaling of gradients.
@@ -127,7 +126,12 @@ def create_optimizer(
     learning_rate = {'schedule': 'constant', 'value': learning_rate}
   lr_schedule = schedule.create_learning_rate_schedule(
       **learning_rate, total_steps=total_steps)
-  ops.append(optax.scale_by_schedule(lambda count: -lr_schedule(count)))
+  # Wrap scale with inject_hyperparams to keep the last learning rate in the
+  # optimizer state.
+  @optax.inject_hyperparams
+  def _scale_by_learning_rate(learning_rate):
+    return optax.scale(-learning_rate)
+  ops.append(_scale_by_learning_rate(lr_schedule))
   # Optionally, freeze some variables.
   ops.append(freeze_weights(
       frozen_pattern=frozen_pattern, trainable_pattern=trainable_pattern))
