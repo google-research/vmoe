@@ -340,12 +340,15 @@ class ParsePartitionSpecTest(parameterized.TestCase):
 class TreeAxisResourcesFromRegexesTest(parameterized.TestCase):
 
   @parameterized.named_parameters(
-      ('_empty_regexes', {'a': 1, 'b': 2, 'c': 3}, [],
+      ('_empty_regexes',
+       {'a': np.asarray(1), 'b': np.asarray(2), 'c': np.asarray(3)}, [],
        {'a': PartitionSpec(), 'b': PartitionSpec(), 'c': PartitionSpec()}),
-      ('_single_string', {'a': 1, 'b': 2, 'c': 3},
+      ('_single_string',
+       {'a': np.asarray(1), 'b': np.asarray((2, 3)), 'c': np.asarray(3)},
        [('b', 'x')],
        {'a': PartitionSpec(), 'b': PartitionSpec('x'), 'c': PartitionSpec()}),
-      ('_first_match', {'a': 1, 'bb': 2, 'c': 3},
+      ('_first_match',
+       {'a': np.asarray(1), 'bb': np.asarray((2, 3)), 'c': np.asarray(3)},
        [('b', ('x',)), ('bb', ('x', 'y'))],
        {'a': PartitionSpec(), 'bb': PartitionSpec('x'), 'c': PartitionSpec()}),
   )

@@ -395,24 +395,25 @@ def tree_axis_resources_from_regexes(
       (re.compile(regex), parse_partition_spec(spec))
       for regex, spec in axis_resources_regexes)
 
-  def search_partition_spec(key: str) -> PartitionSpec:
+  def search_partition_spec(key: str, value: Any) -> PartitionSpec:
+    if value is flax.traverse_util.empty_node:
+      return value
     for regex, partition_spec in axis_resources_regexes:
-      if regex.search(key):
+      if regex.search(key) and np.product(value.shape) > 1:
         return partition_spec
     return PartitionSpec()
 
   # NOTE: We use flax.serialization.to_state_dict to convert an arbitrary PyTree
-  # to a dict, so that we can flatten it's structure using
+  # to a dict, so that we can flatten its structure using
   # flax.traverse_util.flatten_dict. This is not bulletproof, but works for our
   # standard cases (`tree` is a dict, or a TrainState).
-  empty_node = flax.traverse_util.empty_node
   flat_tree_dict = flax.traverse_util.flatten_dict(
-      flax.serialization.to_state_dict(tree), keep_empty_nodes=True)
+      flax.serialization.to_state_dict(tree), keep_empty_nodes=True, sep='/')
   axis_resources = {
-      k: empty_node if v is empty_node else search_partition_spec('/'.join(k))
+      k: search_partition_spec(k, v)
       for k, v in flat_tree_dict.items()
   }
-  axis_resources = flax.traverse_util.unflatten_dict(axis_resources)
+  axis_resources = flax.traverse_util.unflatten_dict(axis_resources, sep='/')
   axis_resources = flax.serialization.from_state_dict(tree, axis_resources)
   return axis_resources
 
