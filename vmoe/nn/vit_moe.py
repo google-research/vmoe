@@ -30,7 +30,9 @@ DType = type(jnp.float32)
 IdentityLayer = models_vit.IdentityLayer
 KwArgs = Mapping[str, Any]
 Metrics = Mapping[str, Array]
+MultiHeadDotProductAttention = nn.MultiHeadDotProductAttention
 Shape = Iterable[int]
+
 
 
 # Slight modification of the VisionTransformer's MlpBlock API.
@@ -132,7 +134,7 @@ class MapHead(nn.Module):
     probe = self.param('probe', nn.initializers.xavier_uniform(),
                        (1, 1, x.shape[-1]), x.dtype)
     probe = jnp.tile(probe, [x.shape[0], 1, 1])
-    x = nn.MultiHeadDotProductAttention(
+    x = MultiHeadDotProductAttention(
         num_heads=self.num_heads,
         kernel_init=nn.initializers.xavier_uniform(),
         deterministic=True,
@@ -156,7 +158,7 @@ class EncoderBlock(nn.Module):
   def __call__(self, inputs):
     # Attention Block.
     x = nn.LayerNorm(dtype=self.dtype)(inputs)
-    x = nn.MultiHeadDotProductAttention(
+    x = MultiHeadDotProductAttention(
         dtype=self.dtype,
         kernel_init=nn.initializers.xavier_uniform(),
         broadcast_dropout=False,
