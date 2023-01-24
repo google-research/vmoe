@@ -406,5 +406,4 @@ def _make_tree_axis_resources_mesh_test_data():
 
 
 if __name__ == '__main__':
-  jax.config.update('jax_array', False)
   absltest.main()

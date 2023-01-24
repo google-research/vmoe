@@ -44,8 +44,6 @@ def main(argv: Sequence[str]) -> None:
   # Log JAX compilation steps.
   jax.config.update('jax_log_compiles', True)
   jax.config.update('jax_default_prng_impl', 'unsafe_rbg')
-  # Disable JAX array until we fully support it.
-  jax.config.update('jax_array', False)
   # Log useful information to identify the process running in the logs.
   logging.info('JAX process: %d / %d', jax.process_index(), jax.process_count())
   logging.info('JAX local devices: %r', jax.local_devices())

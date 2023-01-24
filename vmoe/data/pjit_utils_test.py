@@ -74,5 +74,4 @@ class PrefetchToDevice(parameterized.TestCase):
 
 
 if __name__ == '__main__':
-  jax.config.update('jax_array', False)
   absltest.main()
