@@ -139,7 +139,7 @@ class FewShotPeriodicActionTest(absltest.TestCase):
         main_task=('foo', 2),
         rng_keys=(),
         every_steps=4)
-    with jax.experimental.maps.Mesh(np.asarray(jax.local_devices()), ('d',)):
+    with jax.sharding.Mesh(np.asarray(jax.local_devices()), ('d',)):
       for step in range(1, 10):
         periodic_action(step=step, variables={})
     call_args_list = mock_metric_writer.write_scalars.call_args_list
@@ -170,7 +170,7 @@ class FewShotPeriodicActionTest(absltest.TestCase):
         rng_keys=(),
         every_steps=4,
         seeds_per_step=2)
-    with jax.experimental.maps.Mesh(np.asarray(jax.local_devices()), ('d',)):
+    with jax.sharding.Mesh(np.asarray(jax.local_devices()), ('d',)):
       for step in range(1, 10):
         periodic_action(step=step, variables={})
     call_args_list = mock_metric_writer.write_scalars.call_args_list
@@ -207,7 +207,7 @@ class FewShotPeriodicActionTest(absltest.TestCase):
         every_steps=4,
         report_progress=mock_report_progress,
         report_progress_name='fewshot')
-    with jax.experimental.maps.Mesh(np.asarray(jax.local_devices()), ('d',)):
+    with jax.sharding.Mesh(np.asarray(jax.local_devices()), ('d',)):
       for step in range(1, 10):
         periodic_action(step=step, variables={})
     call_args_list = mock_report_progress.timed.call_args_list

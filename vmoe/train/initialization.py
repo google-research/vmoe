@@ -21,7 +21,6 @@ from absl import logging
 import flax.core
 import flax.traverse_util
 import jax
-from jax.experimental import maps
 import numpy as np
 import scipy.ndimage
 from vit_jax import checkpoint as vit_jax_checkpoint
@@ -46,7 +45,7 @@ def initialize_from_vmoe_release(
     mapping: Sequence[Tuple[str, str]] = (),
     keep: Sequence[str] = (),
     thread_pool: Optional[ThreadPool] = None,
-    mesh: Optional[maps.Mesh] = None,
+    mesh: Optional[jax.sharding.Mesh] = None,
     reshape: Sequence[str] = ()
 ) -> PyTree:
   """Initializes parameters from a V-MoE released checkpoint.

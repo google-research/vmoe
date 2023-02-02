@@ -21,7 +21,7 @@ import jax
 from jax.experimental import maps
 from jax.experimental import pjit
 
-Mesh = maps.Mesh
+Mesh = jax.sharding.Mesh
 PyTree = Any
 
 

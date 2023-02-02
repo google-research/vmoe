@@ -34,7 +34,7 @@ Array = jnp.ndarray
 DatasetIterator = clu.data.DatasetIterator
 EvalStepPjitFn = Callable[['EvalState', 'PyTree', Array, Array, Array],
                           'EvalState']
-PartitionSpec = pjit.PartitionSpec
+PartitionSpec = jax.sharding.PartitionSpec
 PRNGKey = jnp.ndarray
 PyTree = Any
 VALID_KEY = input_pipeline.VALID_KEY

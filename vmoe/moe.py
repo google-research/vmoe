@@ -35,13 +35,12 @@ import flax.linen.partitioning
 import flax.linen.transforms
 import flax.struct
 import jax
-from jax.experimental import pjit
 import jax.numpy as jnp
 import vmoe.partitioning
 
 
 Array = jnp.ndarray
-PartitionSpec = pjit.PartitionSpec
+PartitionSpec = jax.sharding.PartitionSpec
 with_sharding_constraint = vmoe.partitioning.with_sharding_constraint
 _add_axis_to_metadata = flax.linen.partitioning._add_axis_to_metadata  # pylint: disable=protected-access
 

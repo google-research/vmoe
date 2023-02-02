@@ -75,9 +75,9 @@ import numpy as np
 
 AxisResourcesRegexes = Sequence[Tuple[str, 'UnparsedPartitionSpec']]
 Device = jax.lib.xla_client.Device
-Mesh = maps.Mesh
+Mesh = jax.sharding.Mesh
 NamedSharding = sharding.NamedSharding
-PartitionSpec = pjit.PartitionSpec
+PartitionSpec = jax.sharding.PartitionSpec
 PyTree = Any
 TpuCoords = Tuple[int, int, int, int]
 OtherCoords = Tuple[int, int]

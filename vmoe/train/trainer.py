@@ -230,7 +230,7 @@ def create_train_state(
     A TrainState.
   """
   mesh = mesh or maps.thread_resources.env.physical_mesh
-  with maps.Mesh(mesh.devices, mesh.axis_names):
+  with jax.sharding.Mesh(mesh.devices, mesh.axis_names):
     return pjit.pjit(
         initialize_fn,
         in_axis_resources=(None,),
@@ -271,7 +271,7 @@ def create_or_reuse_train_state(
   # pylint: enable=g-long-lambda
   # Replace PartitionSpec of arrays with size = 0. These are not partitioned.
   in_axis_resources = jax.tree_map(
-      lambda x, r: pjit.PartitionSpec() if x.size == 0 else r,
+      lambda x, r: jax.sharding.PartitionSpec() if x.size == 0 else r,
       reuse_train_state, axis_resources)
   # Wrap the given initialize_fn with a new one that selects the arrays in the
   # reuse_train_state or newly created arrays based on the size of the first.
@@ -282,7 +282,7 @@ def create_or_reuse_train_state(
     return jax.tree_map(
         lambda a, b: b if a.size == 0 else a, reuse_train_state, train_state)
 
-  with maps.Mesh(mesh.devices, mesh.axis_names):
+  with jax.sharding.Mesh(mesh.devices, mesh.axis_names):
     return pjit.pjit(
         initialize,
         in_axis_resources=(in_axis_resources, None),
@@ -365,7 +365,7 @@ def restore_or_create_train_state(
         mesh=mesh,
         thread_pool=thread_pool)
     # Copy TrainState to device memory, and return.
-    with maps.Mesh(mesh.devices, mesh.axis_names):
+    with jax.sharding.Mesh(mesh.devices, mesh.axis_names):
       return pjit.pjit(
           fun=lambda x: x,
           in_axis_resources=(axis_resources,),

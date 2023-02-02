@@ -18,7 +18,6 @@ from unittest import mock
 from absl.testing import absltest
 import clu.data
 import jax
-from jax.experimental import maps
 import numpy as np
 import tensorflow as tf
 from vmoe.evaluate import evaluator
@@ -89,7 +88,7 @@ class EvaluatorTest(absltest.TestCase):
         label_pred_fn=self._label_pred_fn,
         rng_keys=[])
     # Run the evaluation.
-    with maps.Mesh(np.asarray(jax.local_devices()), ('d',)):
+    with jax.sharding.Mesh(np.asarray(jax.local_devices()), ('d',)):
       eval_state = evaluator.evaluate_dataset(
           eval_step_pjit=eval_step_pjit,
           dataset=dataset,
@@ -107,7 +106,7 @@ class EvaluatorTest(absltest.TestCase):
     dataset2, _ = self._create_dataset_and_expected_state()
     datasets = {'dataset1': dataset1, 'dataset2': dataset2}
     metric_writer = mock.MagicMock(evaluator.metric_writers.MetricWriter)
-    with maps.Mesh(np.asarray(jax.local_devices()), ('d',)):
+    with jax.sharding.Mesh(np.asarray(jax.local_devices()), ('d',)):
       action = evaluator.EvaluateMultipleDatasets(
           apply_fn=self._apply_fn,
           loss_fn=self._loss_fn,
@@ -153,7 +152,7 @@ class EvaluatorTest(absltest.TestCase):
     dataset, _ = self._create_dataset_and_expected_state()
     datasets = {'dataset': dataset}
     metric_writer = mock.MagicMock(evaluator.metric_writers.MetricWriter)
-    with maps.Mesh(np.asarray(jax.local_devices()), ('d',)):
+    with jax.sharding.Mesh(np.asarray(jax.local_devices()), ('d',)):
       action = evaluator.EvaluateMultipleDatasets(
           apply_fn=self._apply_fn,
           loss_fn=self._loss_fn,

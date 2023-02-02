@@ -17,7 +17,6 @@ from absl.testing import absltest
 from absl.testing import parameterized
 import chex
 import jax
-from jax.experimental import maps
 from jax.experimental import pjit
 import numpy as np
 from vmoe.data import pjit_utils
@@ -44,8 +43,8 @@ class PrefetchToDevice(parameterized.TestCase):
     axis_names = ('a', 'b')
     # Generate random test data.
     x = np.random.normal(size=(256, 32))
-    axis_resources = pjit.PartitionSpec(*axis_resources)
-    with maps.Mesh(devices, axis_names):
+    axis_resources = jax.sharding.PartitionSpec(*axis_resources)
+    with jax.sharding.Mesh(devices, axis_names):
       # Transfer data to device using explicit call to pjit, wrapping an
       # identity function. This is the expected ShardedDeviceArray.
       expected = pjit.pjit(

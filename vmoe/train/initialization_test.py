@@ -19,8 +19,6 @@ from absl.testing import absltest
 from absl.testing import parameterized
 import flax.core
 import jax
-from jax.experimental import maps
-from jax.experimental import pjit
 import numpy as np
 from vmoe.train import initialization
 
@@ -52,12 +50,12 @@ class InitializeFromVmoeReleaseTest(absltest.TestCase):
             },
         },
     })
-    self.axis_resources = jax.tree_map(lambda _: pjit.PartitionSpec(),
+    self.axis_resources = jax.tree_map(lambda _: jax.sharding.PartitionSpec(),
                                        self.params)
 
   def test_success(self):
     with self.assertLogs() as logs:
-      with maps.Mesh(np.asarray(jax.local_devices()), ('d',)):
+      with jax.sharding.Mesh(np.asarray(jax.local_devices()), ('d',)):
         params = initialization.initialize_from_vmoe_release(
             params=self.params,
             axis_resources=self.axis_resources,
@@ -95,7 +93,7 @@ class InitializeFromVmoeReleaseTest(absltest.TestCase):
           keep=['.*/C'])
 
   def test_parameter_shape_not_equal_with_reshape(self):
-    with maps.Mesh(np.asarray(jax.local_devices()), ('d',)):
+    with jax.sharding.Mesh(np.asarray(jax.local_devices()), ('d',)):
       new_shape = (1, 16)  # instead of (4, 4) for 'foo/b'.
       init_params = flax.core.FrozenDict({
           'foo': {
@@ -106,7 +104,7 @@ class InitializeFromVmoeReleaseTest(absltest.TestCase):
       })
       params = initialization.initialize_from_vmoe_release(
           params=init_params,
-          axis_resources=jax.tree_map(lambda _: pjit.PartitionSpec(),
+          axis_resources=jax.tree_map(lambda _: jax.sharding.PartitionSpec(),
                                       init_params),
           prefix='/foo/bar/checkpoint',
           mapping=[('(foo)/A', r'\1/a'), ('(foo)/B', r'\1/b')],
@@ -150,7 +148,7 @@ class InitializeFromVitTest(absltest.TestCase):
 
   def test_success(self):
     with self.assertLogs() as logs:
-      with maps.Mesh(np.asarray(jax.local_devices()), ('d',)):
+      with jax.sharding.Mesh(np.asarray(jax.local_devices()), ('d',)):
         params = initialization.initialize_from_vit(
             params=self.params,
             filepath='/foo/bar/checkpoint.npz',

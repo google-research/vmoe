@@ -37,7 +37,7 @@ import vmoe.utils
 
 Array = Union[jax.numpy.ndarray, np.ndarray]
 DatasetIterator = vmoe.data.input_pipeline.DatasetIterator
-PartitionSpec = jax.experimental.pjit.PartitionSpec
+PartitionSpec = jax.sharding.PartitionSpec
 PyTree = Any
 PRNGKey = jax.random.KeyArray
 

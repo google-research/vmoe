@@ -21,7 +21,6 @@ import chex
 import flax.core
 import flax.linen as nn
 import jax
-import jax.experimental.maps as maps
 import jax.experimental.pjit as pjit
 import jax.numpy as jnp
 import numpy as np
@@ -448,7 +447,7 @@ class SparseMoeSpmdLayerTest(parameterized.TestCase):
                       num_devices, split_rngs, generate_dispatcher_fn):
     # The first axis of the data (e.g. batch_size) is split across two axes in
     # the device mesh.
-    data_partition_spec = pjit.PartitionSpec(('expert', 'replica'))
+    data_partition_spec = jax.sharding.PartitionSpec(('expert', 'replica'))
 
     def init(rng):
       moe_layer = moe.sparse_moe_spmd(
@@ -462,7 +461,7 @@ class SparseMoeSpmdLayerTest(parameterized.TestCase):
     # Thus, each group of devices in one "row" will share the same values for
     # all parameters.
     param_partition_spec = jax.tree_map(
-        lambda _: pjit.PartitionSpec(('expert',)),
+        lambda _: jax.sharding.PartitionSpec(('expert',)),
         jax.eval_shape(init, jax.random.PRNGKey(0)))
     init_pjit = pjit.pjit(
         init, in_axis_resources=None, out_axis_resources=param_partition_spec)
@@ -471,14 +470,14 @@ class SparseMoeSpmdLayerTest(parameterized.TestCase):
     # init function on that mesh.
     devices = np.asarray(jax.devices()[:num_devices])
     devices = devices.reshape(num_experts, num_devices // num_experts)
-    with maps.Mesh(devices, ('expert', 'replica')):
+    with jax.sharding.Mesh(devices, ('expert', 'replica')):
       return init_pjit(jax.random.PRNGKey(0))
 
   def _run_apply(self, batch_size, group_size, capacity, num_experts,
                  num_devices, generate_dispatcher_fn):
     # The first axis of the data (e.g. batch_size) is split across two axes in
     # the device mesh.
-    data_partition_spec = pjit.PartitionSpec(('expert', 'replica'))
+    data_partition_spec = jax.sharding.PartitionSpec(('expert', 'replica'))
 
     def apply(variables):
       moe_layer = moe.sparse_moe_spmd(
@@ -493,7 +492,7 @@ class SparseMoeSpmdLayerTest(parameterized.TestCase):
     # Thus, each group of devices in one "row" will share the same values for
     # all parameters.
     param_partition_spec = flax.core.freeze(
-        {'params': {'p': pjit.PartitionSpec(('expert',))}})
+        {'params': {'p': jax.sharding.PartitionSpec(('expert',))}})
     variables = flax.core.freeze({'params': {'p': 1 + np.arange(num_experts)}})
     apply_pjit = pjit.pjit(
         apply,
@@ -507,7 +506,7 @@ class SparseMoeSpmdLayerTest(parameterized.TestCase):
       devices = devices.reshape(num_experts, num_devices // num_experts)
     else:
       devices = devices.reshape(num_devices, 1)
-    with maps.Mesh(devices, ('expert', 'replica')):
+    with jax.sharding.Mesh(devices, ('expert', 'replica')):
       return apply_pjit(variables)
 
 
@@ -580,7 +579,7 @@ class SparseMoeSpmdWithAxesLayerTest(parameterized.TestCase):
         np.arange(S).reshape(1, S, 1, 1) == np.arange(S).reshape(1, 1, E, C),
         reps=[devices.size, 1, 1, 1]).astype(np.float32)
 
-    with maps.Mesh(devices, ('X', 'Y')), \
+    with jax.sharding.Mesh(devices, ('X', 'Y')), \
          nn.partitioning.axis_rules(axis_rules):
       output = pjit.pjit(
           fun=lambda v, x, w: Foo().apply(v, x, w),
