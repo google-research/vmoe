@@ -16,8 +16,9 @@
 import dataclasses
 import itertools
 import re
-from typing import Any, Iterator, Literal, Sequence, Tuple, Union
+from typing import Any, Iterator, List, Literal, Sequence, Tuple, Union
 
+from absl import logging
 import flax
 import jax
 import jax.numpy as jnp
@@ -78,16 +79,23 @@ class TreeSummarizer:
     object.__setattr__(self, 'rules', rules)
 
   def __call__(self, tree) -> Iterator[Tuple[str, Array]]:
+    num_times_rules_matched = [0] * len(self.rules)
     tree = flax.traverse_util.flatten_dict(
         flax.serialization.to_state_dict(tree), sep='/')
     for key, value in tree.items():
-      yield from self.summarize(key, value)
+      yield from self._summarize(key, value, num_times_rules_matched)
+    for i, rule in enumerate(self.rules):
+      if num_times_rules_matched[i] == 0:
+        logging.warning('Rule %r was not matched with any leaf key.', rule)
 
-  def summarize(self, key: str, value: Array) -> Iterator[Tuple[str, Array]]:
+  def _summarize(
+      self, key: str, value: Array, num_times_rules_matched: List[int],
+  ) -> Iterator[Tuple[str, Array]]:
     """Generates one or multiple summary values for the given input array."""
-    for pattern, *transforms in self.rules:
+    for i, (pattern, *transforms) in enumerate(self.rules):
       pattern = re.compile(pattern) if isinstance(pattern, str) else pattern
       if pattern.search(key):
+        num_times_rules_matched[i] += 1
         suffix, summary = self._transform(value, transforms)
         if summary.size > self.max_summary_values:
           raise ValueError(
