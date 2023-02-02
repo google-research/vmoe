@@ -505,9 +505,10 @@ class TrainAndEvaluateTest(parameterized.TestCase):
     config.loss.name = 'softmax_xent'
     config.mixup = ml_collections.ConfigDict(mixup_config)
     config.extra_rng_keys = ('mixup',)
-    config.plot_norm_grad_patterns = ('v',)
-    config.plot_norm_train_state_patterns = (
-        'opt_state/.*/hyperparams/learning_rate',)
+    config.summarize_arrays = [
+        ('params_grads/v', 'norm'),
+        ('opt_state/.*/hyperparams/learning_rate',),
+    ]
     workdir = self.create_tempdir().full_path
     mock_get_datasets.return_value = {
         'train': self.create_dataset_train(),

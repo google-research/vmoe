@@ -51,6 +51,7 @@ from vmoe.train import initialization
 from vmoe.train import optimizer
 from vmoe.train import periodic_actions as train_periodic_actions
 from vmoe.train import train_state as train_state_module
+from vmoe.train import tree_summarizer
 
 
 Array = jax.numpy.ndarray
@@ -70,6 +71,7 @@ TrainState = train_state_module.TrainState
 TrainStateAxisResources = train_state_module.TrainStateAxisResources
 TrainStateInitFromScratchFn = Callable[[Mapping[str, PRNGKey]], TrainState]
 TrainStepFn = train_state_module.TrainStepFn
+TreeSummarizer = tree_summarizer.TreeSummarizer
 
 
 _getattr = getattr  # Alias of _getattr so that we can mock it in tests.
@@ -196,6 +198,15 @@ def create_progress_hook(*, writer: metric_writers.MetricWriter,
   on_steps.update([first_step, train_steps])
   return ReportProgress(
       num_train_steps=train_steps, writer=writer, on_steps=on_steps, **kwargs)
+
+
+def create_tree_summarizer(config) -> Optional[TreeSummarizer]:
+  if not config:
+    return None
+  if isinstance(config, (list, tuple)):
+    return TreeSummarizer(rules=config)
+  else:
+    return TreeSummarizer(**config)
 
 
 def create_train_state(
@@ -576,8 +587,7 @@ def train_step(
     images: Array,
     labels: Array,
     loss_fn: Callable[[Array, Array], Array],
-    plot_norm_grad_fn: Optional[Callable[[str], bool]] = None,
-    plot_norm_train_state_fn: Optional[Callable[[str], bool]] = None,
+    summarizer: Optional[TreeSummarizer] = None,
 ) -> Tuple[TrainState, Mapping[str, Any]]:
   """Performs one update step of the given TrainState object ."""
   rngs, next_rngs = utils.tree_rngs_split(state.rngs)
@@ -596,24 +606,12 @@ def train_step(
   # Update train state.
   state = state.apply_gradients(grads=grads, rngs=next_rngs)
 
-  if plot_norm_grad_fn:
-    # Compute norm of selected parameters and add them as auxiliary metrics.
-    metrics.update({
-        f'norm_grads/{name}': jnp.sqrt(jnp.vdot(grad, grad))
-        for name, grad in flax.traverse_util.flatten_dict(
-            grads, sep='/').items() if plot_norm_grad_fn(name)
-    })
-
-  if plot_norm_train_state_fn:
-    # Compute the norm of selected arrays in the train state and add them as
-    # auxiliary metrics. This is useful to plot the norm of the values of
-    # parameters, the current learning rate or any other internal state.
-    metrics.update({
-        f'norm_train_state/{name}': jnp.sqrt(jnp.vdot(value, value))
-        for name, value in flax.traverse_util.flatten_dict(
-            flax.serialization.to_state_dict(state), sep='/').items()
-        if plot_norm_train_state_fn(name)
-    })
+  if summarizer:
+    # Summarize arrays in the gradients tree or the train state.
+    state_flat = flax.traverse_util.flatten_dict(
+        flax.serialization.to_state_dict(state), sep='/')
+    state_flat['params_grads'] = flax.traverse_util.flatten_dict(grads, sep='/')
+    metrics.update(summarizer(state_flat))
 
   return state, metrics
 
@@ -677,15 +675,11 @@ def _train_and_evaluate(config: ml_collections.ConfigDict, workdir: str,
       initialization_kwargs=config.get('initialization'))
   init_step = int(train_state.step)
   train_loss_fn, eval_loss_fn, label_pred_fn = get_loss_fn(**config.loss)
-  plot_norm_grad_fn = utils.make_match_fn_from_regex_list(
-      config.get('plot_norm_grad_patterns'))
-  plot_norm_train_state_fn = utils.make_match_fn_from_regex_list(
-      config.get('plot_norm_train_state_patterns'))
+  summarizer = create_tree_summarizer(config.get('summarize_arrays'))
   train_step_fn = functools.partial(
       train_step,
       loss_fn=train_loss_fn,
-      plot_norm_grad_fn=plot_norm_grad_fn,
-      plot_norm_train_state_fn=plot_norm_train_state_fn)
+      summarizer=summarizer)
   if config.get('adversarial', {}):
     adversarial_config = config.adversarial.to_dict()
     train_step_fn = wrap_train_step_with_adversarial_attack(
