@@ -87,7 +87,7 @@ def restore_checkpoint(*,
   if mesh.empty:
     raise ValueError("You must pass a non-empty mesh. If you didn't pass any, "
                      "check that you called restore_checkpoint from a "
-                     "maps.mesh context.")
+                     "jax.sharding.Mesh context.")
   # Restore index as a state dict.
   index = vmoe.checkpoints.base.restore_checkpoint(prefix + '.index')
   version = Version(index.get('version', Version.UNKNOWN))
@@ -259,8 +259,8 @@ def save_checkpoint(*,
     mesh = _get_current_mesh()
   if mesh.empty:
     raise ValueError("You must pass a non-empty mesh. If you didn't pass any, "
-                     "check that you called save_checkpoint from a maps.mesh "
-                     "context.")
+                     "check that you called save_checkpoint from a "
+                     "jax.sharding.Mesh context.")
   filepath_map = _make_save_checkpoint_filepath_map(
       prefix, tree, axis_resources, mesh, num_shards, version)
   if makedirs:

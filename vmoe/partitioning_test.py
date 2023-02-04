@@ -198,7 +198,7 @@ class PartitioningTest(parameterized.TestCase):
     partitions, replicas = (2, 2), (1, 2)
     mesh = partitioning.get_logical_mesh_default(
         partitions, replicas, hardware_mesh)
-    self.assertIsInstance(mesh, partitioning.maps.Mesh)
+    self.assertIsInstance(mesh, jax.sharding.Mesh)
     np.testing.assert_array_equal(mesh.devices,
                                   [[1, 2], [3, 4], [5, 6], [7, 8]])
     self.assertTupleEqual(mesh.axis_names, ('expert', 'replica'))
@@ -214,7 +214,7 @@ class PartitioningTest(parameterized.TestCase):
     hardware_mesh_local_shape = (2, 1)
     mesh = partitioning.get_logical_mesh_tile_by_process(
         partitions, replicas, hardware_mesh, hardware_mesh_local_shape)
-    self.assertIsInstance(mesh, partitioning.maps.Mesh)
+    self.assertIsInstance(mesh, jax.sharding.Mesh)
     np.testing.assert_array_equal(mesh.devices,
                                   [[1, 2], [5, 6], [3, 4], [7, 8]])
     self.assertTupleEqual(mesh.axis_names, ('expert', 'replica'))
