@@ -26,6 +26,7 @@ from jax.experimental import pjit
 import ml_collections
 import numpy as np
 from vmoe import partitioning
+from vmoe import utils
 from vmoe.data import input_pipeline
 from vmoe.data import pjit_utils
 from vmoe.projects.adversarial_attacks import attacks
@@ -110,7 +111,7 @@ def run_pgd_attack(config: ml_collections.ConfigDict, workdir: str):
     mesh = restore.create_mesh(config.get('num_expert_partitions', 1))
     partitioning.log_logical_mesh(mesh)
     (flax_module, variables, variables_axis_resources, loss_fn, router_keys,
-     rngs) = restore.restore_from_config(
+     rng_keys) = restore.restore_from_config(
          config, config.restore.prefix, image_shape, mesh)
   else:
     raise ValueError('config.restore.from = '
@@ -136,9 +137,14 @@ def run_pgd_attack(config: ml_collections.ConfigDict, workdir: str):
       size=config.dataset.get('prefetch_device'),
       mesh=mesh)
   # Initialize PGD state to track statistics over the entire dataset.
-  state = attacks.AttackState.create(
-      max_updates=config.num_updates, router_keys=router_keys, rngs=rngs)
-  state_axis_resources = jax.tree_map(lambda _: PartitionSpec(), state)
+  def init_state():
+    rngs = utils.make_rngs(rng_keys, config.get('seed', 0))
+    return attacks.AttackState.create(
+        max_updates=config.num_updates, router_keys=router_keys, rngs=rngs)
+  state_axis_resources = jax.tree_map(lambda _: PartitionSpec(),
+                                      jax.eval_shape(init_state))
+  init_state_pjit = pjit.pjit(
+      init_state, in_axis_resources=(), out_axis_resources=state_axis_resources)
 
   def stateful_attack(variables, state, x, y, valid):
 
@@ -180,6 +186,7 @@ def run_pgd_attack(config: ml_collections.ConfigDict, workdir: str):
           data_axis_resources,   # combine weights after the attack.
       ))
   with mesh:
+    state = init_state_pjit()
     for step, batch in enumerate(dataset_iter, 1):
       report_progress(step)
       # x_0, x_m, y_0, y_m, cw_0, cw_m: original and final images (x),
@@ -209,19 +216,20 @@ def run_pgd_attack(config: ml_collections.ConfigDict, workdir: str):
   writer = metric_writers.create_default_writer(
       logdir=workdir, just_logging=jax.process_index() > 0)
   with metric_writers.ensure_flushes(writer):
-    # Statistics before the adversarial attack.
-    writer.write_scalars(0, {
-        'error': 1 - state.num_correct[0] / state.num_images,
-        'loss': state.sum_loss[0] / state.num_images,
-    })
-    # Statistics after the adversarial attack.
-    writer.write_scalars(config.num_updates, {
-        'error': 1 - state.num_correct[1] / state.num_images,
-        'loss': state.sum_loss[1] / state.num_images,
-        'prediction_changes': state.num_changes / state.num_images,
-        **{f'routing_changes/{k}': 1 - v / state.num_images
-           for k, v in state.sum_iou_experts.items()}
-    })
+    with jax.spmd_mode('allow_all'):
+      # Statistics before the adversarial attack.
+      writer.write_scalars(0, {
+          'error': 1 - state.num_correct[0] / state.num_images,
+          'loss': state.sum_loss[0] / state.num_images,
+      })
+      # Statistics after the adversarial attack.
+      writer.write_scalars(config.num_updates, {
+          'error': 1 - state.num_correct[1] / state.num_images,
+          'loss': state.sum_loss[1] / state.num_images,
+          'prediction_changes': state.num_changes / state.num_images,
+          **{f'routing_changes/{k}': 1 - v / state.num_images
+             for k, v in state.sum_iou_experts.items()}
+      })
   # Each process optionally stores the processed examples.
   if example_storage:
     logging.info('Saving examples to %r...', example_storage.filepath)

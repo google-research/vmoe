@@ -18,11 +18,13 @@ from unittest import mock
 from absl.testing import absltest
 import clu.data
 import jax
+from jax.experimental import pjit
 import numpy as np
 import tensorflow as tf
 from vmoe.evaluate import evaluator
 
-PartitionSpec = evaluator.PartitionSpec
+Mesh = jax.sharding.Mesh
+PartitionSpec = jax.sharding.PartitionSpec
 TfDatasetIterator = clu.data.TfDatasetIterator
 
 
@@ -79,7 +81,6 @@ class EvaluatorTest(absltest.TestCase):
   def test_evaluate_dataset(self):
     # Create random test dataset.
     dataset, expected_eval_state = self._create_dataset_and_expected_state()
-
     eval_step_pjit = evaluator.make_eval_step_pjit(
         params_axis_resources={},  # Model has no parameters.
         input_axis_resources=PartitionSpec('d',),
@@ -88,12 +89,19 @@ class EvaluatorTest(absltest.TestCase):
         label_pred_fn=self._label_pred_fn,
         rng_keys=[])
     # Run the evaluation.
-    with jax.sharding.Mesh(np.asarray(jax.local_devices()), ('d',)):
+    with Mesh(np.asarray(jax.local_devices()), ('d',)):
+      eval_state = evaluator.EvalState(
+          num=np.zeros((), dtype=np.float32),
+          sum_correct=np.zeros((), dtype=np.float32),
+          sum_loss=np.zeros((), dtype=np.float32),
+          rngs={})
+      eval_state = pjit.pjit(fun=lambda x: x, in_axis_resources=None,
+                             out_axis_resources=None)(eval_state)
       eval_state = evaluator.evaluate_dataset(
           eval_step_pjit=eval_step_pjit,
+          eval_state=eval_state,
           dataset=dataset,
-          params={},  # Model has no parameters.
-          rng_keys=[])
+          params={})  # Model has no parameters.
     # Check that the values of the EvalState are correct.
     self.assertAlmostEqual(eval_state.num, expected_eval_state.num)
     self.assertAlmostEqual(eval_state.sum_correct,
@@ -106,7 +114,7 @@ class EvaluatorTest(absltest.TestCase):
     dataset2, _ = self._create_dataset_and_expected_state()
     datasets = {'dataset1': dataset1, 'dataset2': dataset2}
     metric_writer = mock.MagicMock(evaluator.metric_writers.MetricWriter)
-    with jax.sharding.Mesh(np.asarray(jax.local_devices()), ('d',)):
+    with Mesh(np.asarray(jax.local_devices()), ('d',)):
       action = evaluator.EvaluateMultipleDatasets(
           apply_fn=self._apply_fn,
           loss_fn=self._loss_fn,
@@ -152,7 +160,7 @@ class EvaluatorTest(absltest.TestCase):
     dataset, _ = self._create_dataset_and_expected_state()
     datasets = {'dataset': dataset}
     metric_writer = mock.MagicMock(evaluator.metric_writers.MetricWriter)
-    with jax.sharding.Mesh(np.asarray(jax.local_devices()), ('d',)):
+    with Mesh(np.asarray(jax.local_devices()), ('d',)):
       action = evaluator.EvaluateMultipleDatasets(
           apply_fn=self._apply_fn,
           loss_fn=self._loss_fn,

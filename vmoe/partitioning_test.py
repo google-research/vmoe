@@ -299,31 +299,6 @@ class PartitioningTest(parameterized.TestCase):
     self.assertRegex(cm.output[5], re.escape('| (2, 10)[10] |'))
     self.assertRegex(cm.output[6], '\\+[-]+\\+')
 
-  def test_tree_global_shape(self):
-    """Tests that global shape of arrays is obtained correctly."""
-    # Note: see _make_tree_axis_resources_mesh_test_data for additional details.
-    tree, axis_resources, mesh = _make_tree_axis_resources_mesh_test_data()
-    expected_global_aval = {
-        'v': jax.ShapedArray(shape=(5, 5), dtype=jnp.float32),
-        'w': jax.ShapedArray(shape=(4 * 5, 5), dtype=jnp.float32),
-        'x': jax.ShapedArray(shape=(4 * 2 * 5, 5), dtype=jnp.float32),
-        'y': jax.ShapedArray(shape=(4 * 5, 2 * 5), dtype=jnp.float32),
-        'z': jax.ShapedArray(shape=(4 * 3 * 5, 2 * 5), dtype=jnp.float32),
-    }
-    global_aval = partitioning.tree_global_shape(tree, axis_resources, mesh)
-    self.assertDictEqual(global_aval, expected_global_aval)
-
-  def test_tree_global_shape_raises_structs_not_match(self):
-    mesh = partitioning.Mesh(devices=np.zeros((4, 4)), axis_names=('a', 'b'))
-    with self.assertRaisesRegex(ValueError, 'The tree structs do not match'):
-      partitioning.tree_global_shape({'a': 1, 'b': 2}, {'c': PartitionSpec()},
-                                     mesh)
-
-  def test_tree_global_shape_raises_wrong_leaves(self):
-    mesh = partitioning.Mesh(devices=np.zeros((4, 4)), axis_names=('a', 'b'))
-    with self.assertRaisesRegex(ValueError, 'the input tree must have'):
-      partitioning.tree_global_shape({'a': 1}, {'a': PartitionSpec()}, mesh)
-
 
 class ParsePartitionSpecTest(parameterized.TestCase):
 

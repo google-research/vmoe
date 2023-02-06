@@ -73,9 +73,21 @@ def get_config():
   config.model = get_vmoe_config(config.description)
   # Model initialization from the released checkpoints.
   config.initialization = ml_collections.ConfigDict({
-      'name': 'initialize_from_vmoe_release',
+      'name': 'initialize_from_vmoe',
       'prefix': 'gs://vmoe_checkpoints/vmoe_b16_imagenet21k_randaug_strong',
-      'keep': ['head'],
+      'rules': [
+          ('head', ''),              # Do not restore the head params.
+          # We pre-trained on 224px and are finetuning on 384px.
+          # Resize positional embeddings.
+          ('^(.*/pos_embedding)$', r'params/\1', 'vit_zoom'),
+          # Restore the rest of parameters without any transformation.
+          ('^(.*)$', r'params/\1'),
+      ],
+      # We are not initializing several arrays from the new train state, do not
+      # raise an exception.
+      'raise_if_target_unmatched': False,
+      # Partition MoE parameters when reading from the checkpoint.
+      'axis_resources_regexes': [('Moe/Mlp/.*', ('expert',))],
   })
   config.optimizer = ml_collections.ConfigDict({
       'name': 'sgd',

@@ -34,11 +34,11 @@ from jax.experimental import pjit
 import jax.numpy as jnp
 import ml_collections
 import numpy as np
+from vmoe import checkpoints
+from vmoe import initialization
 from vmoe import multihost_utils
 from vmoe import partitioning
 from vmoe import utils
-from vmoe.checkpoints import base as checkpoints_base
-from vmoe.checkpoints import partitioned as checkpoints_partitioned
 from vmoe.checkpoints import periodic_actions as checkpoints_periodic_actions
 from vmoe.data import input_pipeline
 from vmoe.data import pjit_utils
@@ -47,7 +47,6 @@ from vmoe.evaluate import evaluator
 from vmoe.evaluate import fewshot
 from vmoe.nn import models
 from vmoe.projects.adversarial_attacks import attacks as adversarial_attacks
-from vmoe.train import initialization
 from vmoe.train import optimizer
 from vmoe.train import periodic_actions as train_periodic_actions
 from vmoe.train import train_state as train_state_module
@@ -69,7 +68,6 @@ SingleProcessPeriodicAction = train_periodic_actions.SingleProcessPeriodicAction
 ThreadPool = multiprocessing.pool.ThreadPool
 TrainState = train_state_module.TrainState
 TrainStateAxisResources = train_state_module.TrainStateAxisResources
-TrainStateInitFromScratchFn = Callable[[Mapping[str, PRNGKey]], TrainState]
 TrainStepFn = train_state_module.TrainStepFn
 TreeSummarizer = tree_summarizer.TreeSummarizer
 
@@ -83,7 +81,6 @@ _prepare_axis_resources = pjit._prepare_axis_resources
 
 
 def create_checkpoint_hook(*, workdir: str, progress_hook: ReportProgress,
-                           train_state_axis_resources: TrainStateAxisResources,
                            train_steps: int,
                            **kwargs) -> PeriodicCheckpointSaver:
   on_steps = set(kwargs.pop('on_steps', []))
@@ -91,7 +88,6 @@ def create_checkpoint_hook(*, workdir: str, progress_hook: ReportProgress,
   on_steps.update([train_steps])
   return PeriodicCheckpointSaver(
       prefix=os.path.join(workdir, 'ckpt'),
-      state_axis_resources=train_state_axis_resources,
       report_progress=progress_hook,
       report_progress_name='ckpt',
       on_steps=on_steps,
@@ -209,94 +205,67 @@ def create_tree_summarizer(config) -> Optional[TreeSummarizer]:
     return TreeSummarizer(**config)
 
 
-def create_train_state(
-    *,
-    initialize_fn: TrainStateInitFromScratchFn,
-    axis_resources: TrainStateAxisResources,
-    rngs: Mapping[str, PRNGKey],
-    mesh: Optional[Mesh] = None,
-) -> TrainState:
-  """Creates a TrainState object initialized from scratch.
-
-  Args:
-    initialize_fn: Function used to create and initialize a train state from
-      scratch.
-    axis_resources: A PyTree with the same structure as a TrainState, but with
-      PartitionSpec leaves, indicating how the output TrainState is partitioned.
-    rngs: Dictionary of PRNGs to use during model initialization.
-    mesh: Logical mesh used by pjit. If None, uses the currently active mesh.
-
-  Returns:
-    A TrainState.
-  """
-  mesh = mesh or maps.thread_resources.env.physical_mesh
-  with jax.sharding.Mesh(mesh.devices, mesh.axis_names):
-    return pjit.pjit(
-        initialize_fn,
-        in_axis_resources=(None,),
-        out_axis_resources=axis_resources)(rngs)
-
-
 def create_or_reuse_train_state(
     *,
-    initialize_fn: TrainStateInitFromScratchFn,
-    axis_resources: TrainStateAxisResources,
-    rngs: Mapping[str, PRNGKey],
-    reuse_train_state: TrainState,
+    train_state: TrainState,
+    initialize_fn: Callable[[], TrainState],
     mesh: Optional[Mesh] = None,
 ) -> TrainState:
   """Creates a TrainState object initialized from scratch, re-using some parts.
 
   Args:
+    train_state: TrainState containing either jax.Array or jax.ShapeDtypeStruct
+      leaves with sharding annotation.
     initialize_fn: Function used to create and initialize a train state from
       scratch.
-    axis_resources: A PyTree with the same structure as a TrainState, but with
-      PartitionSpec leaves, indicating how the output TrainState is partitioned.
-    rngs: Dictionary of PRNGs to use during model initialization.
-    reuse_train_state: TrainState containing the arrays to re-use. All arrays
-      with a size other than 0 are re-used.
     mesh: Logical mesh used by pjit. If None, uses the currently active mesh.
 
   Returns:
     A TrainState.
   """
   mesh = mesh or maps.thread_resources.env.physical_mesh
-  out_axis_resources = axis_resources
-  # Replace ShapeDtypeStruct objects with Numpy arrays of size 0.
-  # pylint: disable=g-long-lambda
-  reuse_train_state = jax.tree_map(
-      lambda x: np.array([], dtype=x.dtype)
-      if isinstance(x, jax.ShapeDtypeStruct) else np.asarray(x),
-      reuse_train_state)
-  # pylint: enable=g-long-lambda
-  # Replace PartitionSpec of arrays with size = 0. These are not partitioned.
-  in_axis_resources = jax.tree_map(
-      lambda x, r: jax.sharding.PartitionSpec() if x.size == 0 else r,
-      reuse_train_state, axis_resources)
-  # Wrap the given initialize_fn with a new one that selects the arrays in the
-  # reuse_train_state or newly created arrays based on the size of the first.
-  # We leverage the fact that XLA will remove unused variables/ops when this
-  # new initialize function is compiled.
-  def initialize(reuse_train_state: TrainState, rngs: Mapping[str, PRNGKey]):
-    train_state = initialize_fn(rngs)
-    return jax.tree_map(
-        lambda a, b: b if a.size == 0 else a, reuse_train_state, train_state)
-
-  with jax.sharding.Mesh(mesh.devices, mesh.axis_names):
-    return pjit.pjit(
-        initialize,
-        in_axis_resources=(in_axis_resources, None),
+  # Flatten input train state and keep the ShapeDtypeStruct for the arrays that
+  # must be created from scratch.
+  train_state_dict = flax.traverse_util.flatten_dict(
+      flax.serialization.to_state_dict(train_state), sep='/',
+      keep_empty_nodes=True)
+  out_axis_resources = {
+      k: v.sharding for k, v in train_state_dict.items()
+      if isinstance(v, jax.ShapeDtypeStruct)
+  }
+  # Wrap initialize function to return only those arrays that are not present
+  # yet in the input train state.
+  def _initialize_fn():
+    train_state = initialize_fn()
+    train_state = flax.traverse_util.flatten_dict(
+        flax.serialization.to_state_dict(train_state), sep='/',
+        keep_empty_nodes=True)
+    return {k: v for k, v in train_state.items() if k in out_axis_resources}
+  # Run the wrapped initialize function, shard the outputs according to the
+  # previously generated out_axis_resources dict.
+  with mesh:
+    new_train_state_dict = pjit.pjit(
+        _initialize_fn,
+        in_axis_resources=(),
         out_axis_resources=out_axis_resources,
-        donate_argnums=(0,))(reuse_train_state, rngs)
+    )()
+  # Replace the ShapeDtypeStruct objects from the input train state with the
+  # newly generated arrays.
+  for k, v in new_train_state_dict.items():
+    train_state_dict[k] = v
+  return flax.serialization.from_state_dict(
+      train_state, flax.traverse_util.unflatten_dict(train_state_dict, sep='/'))
 
 
-def create_train_state_initialize_from_scratch_fn(
+def make_create_train_state_fn(
     *,
     model: nn.Module,
     optimizer_config: Dict[str, Any],
     input_shape: Tuple[int, ...],
     input_axis_resources: PartitionSpec,
-    train_steps: int) -> TrainStateInitFromScratchFn:
+    train_steps: int,
+    seed: int = 0,
+    extra_rng_keys: Tuple[str, ...]) -> Callable[[], TrainState]:
   """Returns a function that creates and initializes a TrainState from scratch.
 
   Args:
@@ -305,18 +274,22 @@ def create_train_state_initialize_from_scratch_fn(
     input_shape: Shape of the inputs to the model.
     input_axis_resources: PartitionSpec for the inputs of the model.
     train_steps: Total number of training steps.
+    seed: PRNG seed.
+    extra_rng_keys: Sequence of RNG keys used by the model, in addition to
+      "params".
 
   Returns:
     A function that creates a new TrainState when called.
   """
   # Optimizer is an optax.GradientTransform.
   tx = optimizer.create_optimizer(**optimizer_config, total_steps=train_steps)
+  rng_keys = ('params',) + extra_rng_keys
 
-  def initialize(rngs: Mapping[str, PRNGKey]):
+  def initialize():
+    rngs = utils.make_rngs(rng_keys, seed)
     inputs = jnp.zeros(input_shape, dtype=jnp.float32)
     inputs = partitioning.with_sharding_constraint(inputs, input_axis_resources)
     variables = model.init(rngs, inputs)
-    rngs = dict(**rngs)
     rngs.pop('params')  # This PRNGKey is not used anymore.
     return TrainState.create(
         apply_fn=model.apply, tx=tx, rngs=rngs, **variables)
@@ -327,9 +300,8 @@ def create_train_state_initialize_from_scratch_fn(
 def restore_or_create_train_state(
     *,
     prefix: str,
-    initialize_fn: TrainStateInitFromScratchFn,
-    axis_resources: TrainState,
-    rngs: Mapping[str, PRNGKey],
+    initialize_fn: Callable[[], TrainState],
+    axis_resources_regexes: partitioning.AxisResourcesRegexes,
     mesh: Optional[Mesh] = None,
     thread_pool: Optional[ThreadPool] = None,
     initialization_kwargs: Optional[Mapping[str, Any]] = None,
@@ -342,9 +314,8 @@ def restore_or_create_train_state(
       such as '/tmp/ckpt_1.index' and '/tmp/ckpt_1.data-?????-of-?????'.
     initialize_fn: Function used to create and initialize a train state from
       scratch.
-    axis_resources: A PyTree with the same structure as a TrainState, but with
-      PartitionSpec leaves.
-    rngs: Dictionary of PRNGs to use during model initialization.
+    axis_resources_regexes: Regular expressions specifying how the TrainState
+      is partitioned.
     mesh: Logical mesh used by pjit. If None, uses the currently active mesh.
     thread_pool: Thread pool used to restore checkpoints.
     initialization_kwargs: Optional dictionary containing the kwargs used to
@@ -354,40 +325,35 @@ def restore_or_create_train_state(
     A TrainState.
   """
   mesh = mesh or maps.thread_resources.env.physical_mesh
-  prefix = checkpoints_base.find_latest_complete_checkpoint_for_prefix(
+  train_state_shape_dtype = jax.eval_shape(initialize_fn)
+  train_state_axis_resources = partitioning.tree_axis_resources_from_regexes(
+      tree=train_state_shape_dtype,
+      axis_resources_regexes=axis_resources_regexes)
+  train_state_axis_resources = jax.tree_util.tree_map(
+      lambda spec: pjit.NamedSharding(mesh, spec), train_state_axis_resources)
+  train_state = jax.tree_util.tree_map(
+      lambda x, y: jax.ShapeDtypeStruct(x.shape, x.dtype, sharding=y),
+      train_state_shape_dtype, train_state_axis_resources)
+
+  prefix = checkpoints.find_latest_complete_checkpoint_for_prefix(
       prefix=prefix, suffixes=('.index', '.data'))
   if prefix:
+    logging.info('Continue training from checkpoint prefix = %r', prefix)
     # Restore train_state from checkpoints to CPU memory.
-    train_state = checkpoints_partitioned.restore_checkpoint(
+    return checkpoints.restore_checkpoint_partitioned(
         prefix=prefix,
-        tree=jax.eval_shape(initialize_fn, rngs),
-        axis_resources=axis_resources,
-        mesh=mesh,
+        tree=train_state,
         thread_pool=thread_pool)
-    # Copy TrainState to device memory, and return.
-    with jax.sharding.Mesh(mesh.devices, mesh.axis_names):
-      return pjit.pjit(
-          fun=lambda x: x,
-          in_axis_resources=(axis_resources,),
-          out_axis_resources=axis_resources,
-          donate_argnums=(0,))(train_state)
   if initialization_kwargs:
-    # Compute global shapes of the TrainState and convert them to local shapes.
-    train_state = jax.eval_shape(initialize_fn, rngs)
-    train_state = tree_global_to_local_shape(train_state, axis_resources, mesh)
+    logging.info('Partially initializing the TrainState: %r',
+                 initialization_kwargs)
     # Initialize TrainState from checkpoint. Arrays that are not initialized,
     # are ShapeDtypeStruct objects.
     train_state = initialize_train_state_from_checkpoint(
-        train_state=train_state,
-        axis_resources=axis_resources,
+        train_state=train_state, mesh=mesh, thread_pool=thread_pool,
         **initialization_kwargs)
-    return create_or_reuse_train_state(
-        initialize_fn=initialize_fn, axis_resources=axis_resources, rngs=rngs,
-        mesh=mesh, reuse_train_state=train_state)
-  # Otherwise, create a new train state from scratch on device.
-  return create_train_state(
-      initialize_fn=initialize_fn, axis_resources=axis_resources, rngs=rngs,
-      mesh=mesh)
+  return create_or_reuse_train_state(
+      train_state=train_state, initialize_fn=initialize_fn, mesh=mesh)
 
 
 def get_loss_fn(name: str, **kwargs):
@@ -452,8 +418,9 @@ def get_train_steps_and_epochs(
 def initialize_train_state_from_checkpoint(
     *,
     train_state: TrainState,
-    axis_resources: TrainStateAxisResources,
     name: str,
+    mesh: Mesh,
+    thread_pool: Optional[ThreadPool] = None,
     **kwargs) -> TrainState:
   """Initializes a TrainState from a pre-trained checkpoint.
 
@@ -466,26 +433,20 @@ def initialize_train_state_from_checkpoint(
     train_state: TrainState to initialize from the checkpoint. The given object
       must not be used after the call to this function. Use the returned one
       instead.
-    axis_resources: TrainStateAxisResources indicating how the `train_state` is
-      partitioned.
     name: Name of the method used to initialize the train state.
+    mesh: Logical mesh used by pjit.
+    thread_pool: Thread pool used to restore checkpoints.
     **kwargs: Additional arguments for the respective initialization function.
 
   Returns:
     A TrainState object.
   """
-  if name == 'initialize_from_vmoe_release':
-    return train_state.replace(
-        params=initialization.initialize_from_vmoe_release(
-            params=train_state.params,
-            axis_resources=axis_resources.params,
-            thread_pool=ThreadPool(kwargs.pop('num_threads', None)),
-            **kwargs))
+  if name == 'initialize_from_vmoe':
+    return initialization.initialize_from_vmoe(
+        target=train_state, mesh=mesh, thread_pool=thread_pool, **kwargs)
   elif name == 'initialize_from_vit':
-    return train_state.replace(
-        params=initialization.initialize_from_vit(
-            params=train_state.params,
-            **kwargs))
+    return initialization.initialize_from_vit(target=train_state, mesh=mesh,
+                                              **kwargs)
   else:
     raise ValueError(f'Unknown initialization method: {name!r}')
 
@@ -645,35 +606,27 @@ def _train_and_evaluate(config: ml_collections.ConfigDict, workdir: str,
       train_batch_size)
 
   # Get the global shape of the image array.
-  element_spec: ArraySpecDict = datasets['train'].element_spec  # pytype: disable=annotation-type-mismatch
-  train_image_shape = tuple(element_spec['image'].shape)
-  train_image_shape = (train_batch_size,) + train_image_shape[1:]
-  # Get the PartitionSpec for the inputs. By default, the first axis (batch)
-  # is split among all axes of the logical device mesh, meaning that data is
-  # fully partitioned, as usual.
   input_axis_resources = config.get('input_axis_resources', (mesh.axis_names,))
   input_axis_resources = partitioning.parse_partition_spec(input_axis_resources)
+  datataset_element_shape_dtype = pjit_utils.get_dataset_shape_dtype_struct(
+      datasets['train'], input_axis_resources)
 
-  train_state_initialize_fn = create_train_state_initialize_from_scratch_fn(
+  train_state_initialize_fn = make_create_train_state_fn(
       model=create_flax_model(config=config.model, deterministic=False),
       optimizer_config=config.optimizer,
-      input_shape=train_image_shape,
+      input_shape=datataset_element_shape_dtype['image'].shape,
       input_axis_resources=input_axis_resources,
-      train_steps=train_steps)
-  train_state_rngs = utils.make_rngs(
-      ('params',) + tuple(config.get('extra_rng_keys', [])),
-      config.get('seed', 0))
-  train_state_axis_resources = partitioning.tree_axis_resources_from_regexes(
-      tree=jax.eval_shape(train_state_initialize_fn, train_state_rngs),
-      axis_resources_regexes=config.params_axis_resources)
+      train_steps=train_steps,
+      extra_rng_keys=tuple(config.get('extra_rng_keys', [])),
+      seed=config.get('seed', 0))
   train_state = restore_or_create_train_state(
       prefix=os.path.join(workdir, 'ckpt'),
       initialize_fn=train_state_initialize_fn,
-      axis_resources=train_state_axis_resources,
-      rngs=train_state_rngs,
+      axis_resources_regexes=config.params_axis_resources,
       thread_pool=ThreadPool(),
       initialization_kwargs=config.get('initialization'))
   init_step = int(train_state.step)
+  logging.info('Initial step = %d', init_step)
   train_loss_fn, eval_loss_fn, label_pred_fn = get_loss_fn(**config.loss)
   summarizer = create_tree_summarizer(config.get('summarize_arrays'))
   train_step_fn = functools.partial(
@@ -692,14 +645,9 @@ def _train_and_evaluate(config: ml_collections.ConfigDict, workdir: str,
 
   train_step_pjit = pjit.pjit(
       fun=train_step_fn,
-      in_axis_resources=(
-          train_state_axis_resources,  # train_state
-          input_axis_resources,        # images
-          input_axis_resources         # labels
-      ),
       out_axis_resources=(
-          train_state_axis_resources,  # train_state
-          None,                        # metrics
+          jax.tree_util.tree_map(lambda x: x.sharding, train_state),
+          None,
       ),
       donate_argnums=(0, 1, 2))
 
@@ -713,7 +661,6 @@ def _train_and_evaluate(config: ml_collections.ConfigDict, workdir: str,
       **config.get('report_progress', {}))
   checkpoint_hook = create_checkpoint_hook(
       workdir=workdir, progress_hook=progress_hook,
-      train_state_axis_resources=train_state_axis_resources,
       train_steps=train_steps, **config.get('save_checkpoint', {}))
   evaluation_hook, config_model_eval = create_evaluation_hook(
       base_model_config=config.model.copy_and_resolve_references(),
@@ -722,7 +669,8 @@ def _train_and_evaluate(config: ml_collections.ConfigDict, workdir: str,
       datasets={name: ds for name, ds in datasets.items() if name != 'train'},
       loss_fn=eval_loss_fn,
       label_pred_fn=label_pred_fn,
-      params_axis_resources=train_state_axis_resources.params,
+      params_axis_resources=jax.tree_util.tree_map(lambda x: x.sharding,
+                                                   train_state.params),
       input_axis_resources=input_axis_resources,
       first_step=init_step + 1,
       train_steps=train_steps,
@@ -732,7 +680,10 @@ def _train_and_evaluate(config: ml_collections.ConfigDict, workdir: str,
       base_model_config=config_model_eval,
       writer=writer,
       progress_hook=progress_hook,
-      variables_axis_resources={'params': train_state_axis_resources.params},
+      variables_axis_resources={
+          'params': jax.tree_util.tree_map(lambda x: x.sharding,
+                                           train_state.params),
+      },
       input_axis_resources=input_axis_resources,
       first_step=init_step + 1,
       train_steps=train_steps,
@@ -741,17 +692,17 @@ def _train_and_evaluate(config: ml_collections.ConfigDict, workdir: str,
   with metric_writers.ensure_flushes(writer):
     # Explicitly compile train_step here and report the compilation time.
     t0 = time.time()
-    train_step_pjit = train_step_pjit.lower(*utils.tree_shape_dtype_struct((
+    train_step_pjit = train_step_pjit.lower(
         train_state,
-        datasets['train'].element_spec['image'],
-        datasets['train'].element_spec['labels']))).compile()
+        datataset_element_shape_dtype['image'],
+        datataset_element_shape_dtype['labels']).compile()
     t1 = time.time()
     writer.write_scalars(init_step + 1, {'train/compile_secs': t1 - t0})
     # Create iterator over the train dataset.
     tr_iter = pjit_utils.prefetch_to_device(
         iterator=datasets['train'],
-        axis_resources={'image': input_axis_resources,
-                        'labels': input_axis_resources},
+        axis_resources=jax.tree_util.tree_map(lambda x: x.sharding.spec,
+                                              datataset_element_shape_dtype),
         size=config.dataset.train.get('prefetch_device'))
     for step, batch in zip(range(init_step + 1, train_steps + 1), tr_iter):
       profile_hook(step)
@@ -763,44 +714,8 @@ def _train_and_evaluate(config: ml_collections.ConfigDict, workdir: str,
       checkpoint_hook(step, state=train_state)
       evaluation_hook(step, params=train_state.params)
       fewshot_hook(step, variables={'params': train_state.params})
-  # Write a checkpoint containing only the params, with no TrainState, to use
-  # for fine-tuning or releasing it.
-  logging.info('Saving checkpoint ready for releasing and fine-tuning.')
-  checkpoints_partitioned.save_checkpoint(
-      prefix=os.path.join(workdir, 'release_ckpt'),
-      tree=train_state.params,
-      axis_resources=train_state_axis_resources.params,
-      num_shards=config.get('save_checkpoint', {}).get('num_shards', 0),
-      makedirs=False,
-      thread_pool=config.get('save_checkpoint', {}).get('num_threads')).wait()
-  multihost_utils.sync_devices('checkpoints:release')
+  multihost_utils.sync_devices('training:completed')
   logging.info('Training completed.')
-
-
-def tree_global_to_local_shape(tree, axis_resources, mesh):
-  """Maps a tree from global to local shapes."""
-  # Note: This requires some low-level understanding about pjit. Replace this
-  # if we switch to Global Device Array (GDA) in the future.
-  # See more information in checkpoints/partitioned.py.
-  leaves, struct_tree = jax.tree_flatten(tree)
-  axis_resources, struct_axis_resources = jax.tree_flatten(axis_resources)
-  if struct_tree != struct_axis_resources:
-    raise ValueError(f'The tree structs do not match.\n'
-                     f'index: {struct_tree}\n'
-                     f'axis_resources: {struct_axis_resources}')
-  global_shapes = [jax.ShapedArray(x.shape, x.dtype) for x in leaves]
-  positional_semantics = [_PositionalSemantics.LOCAL for _ in global_shapes]
-  shardings = [NamedSharding(mesh, spec) for spec in axis_resources]
-  shardings = [
-      pjit.to_op_sharding_sharding(s, a.ndim)
-      for a, s in zip(global_shapes, shardings)
-  ]
-  local_shapes = pjit.global_to_local(positional_semantics, global_shapes,
-                                      shardings, mesh)
-  return struct_tree.unflatten([
-      jax.ShapeDtypeStruct(shape=s.shape, dtype=s.dtype)
-      for s in local_shapes
-  ])
 
 
 def wrap_train_step_with_adversarial_attack(

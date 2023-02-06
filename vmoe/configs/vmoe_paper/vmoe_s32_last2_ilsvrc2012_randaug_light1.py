@@ -62,7 +62,7 @@ def get_config():
   config.dataset.val = get_data_params_eval('imagenet2012', 'train[99%:]')
   config.dataset.test = get_data_params_eval('imagenet2012', 'validation')
   config.dataset.imagenet_v2 = get_data_params_eval('imagenet_v2', 'test')
-  config.dataset.imagenet_real = common.get_data_params(
+  config.dataset.imagenet_real = common.get_data_config(
       name='imagenet2012_real',
       split='validation',
       process=(f'decode|resize_small(256)|central_crop(224)|value_range(-1,1)|'
@@ -80,7 +80,7 @@ def get_config():
   config.optimizer = get_optimizer_params(config.description)
   config.train_epochs = common.get_num_epochs(config.description)
   # Mixup options.
-  config.mixup = common.get_mixup_params('light1')
+  config.mixup = common.get_mixup_config('light1')
   # These control how the model parameters are partitioned across the device
   # mesh for running the models efficiently.
   config.num_expert_partitions = config.model.encoder.moe.num_experts
@@ -98,7 +98,7 @@ def get_data_params_train(
   """Returns data config for training."""
   randaug = common.get_randaug(aug)
   process = f'decode_jpeg_and_inception_crop(224)|flip_lr|{randaug}|{PP_COMMON}'
-  config = common.get_data_params(
+  config = common.get_data_config(
       name=name, split=split, batch_size=BATCH_SIZE, process=process,
       shuffle_buffer=50_000, cache=None)
   config.data_dir = TFDS_DATA_DIR
@@ -111,7 +111,7 @@ def get_data_params_train(
 def get_data_params_eval(name: str, split: str) -> ml_collections.ConfigDict:
   """Returns data config for evaluation."""
   process = f'decode|resize_small(256)|central_crop(224)|{PP_COMMON}'
-  config = common.get_data_params(
+  config = common.get_data_config(
       name=name, split=split, batch_size=BATCH_SIZE, process=process,
       shuffle_buffer=None, cache='batched')
   config.data_dir = TFDS_DATA_DIR
@@ -123,7 +123,7 @@ def get_data_params_eval(name: str, split: str) -> ml_collections.ConfigDict:
 
 def get_optimizer_params(description: str) -> ml_collections.ConfigDict:
   """Returns optimizer parameters for different canonical architectures."""
-  config = common.get_optimizer_params(description)
+  config = common.get_optimizer_config(description)
   # Overwrite these params, different from the standard ones in the V-MoE paper.
   config.weight_decay = [('.*/kernel', 0.1)]
   config.learning_rate.peak_value = 3e-3
@@ -132,7 +132,7 @@ def get_optimizer_params(description: str) -> ml_collections.ConfigDict:
 
 
 def get_vmoe_params(description: str) -> ml_collections.ConfigDict:
-  config = common.get_vmoe_params(
+  config = common.get_vmoe_config(
       description, image_size=224, num_classes=NUM_CLASSES)
   config.encoder.moe.dropout_rate = 0.2
   return config

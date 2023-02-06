@@ -13,12 +13,12 @@
 # limitations under the License.
 
 """PeriodicAction that saves checkpoints periodically."""
+import multiprocessing
 import os
 from typing import Iterable, Optional
 
 from clu import periodic_actions
 import jax
-import numpy as np
 
 from vmoe import multihost_utils
 from vmoe.checkpoints import base as checkpoints_base
@@ -26,7 +26,6 @@ from vmoe.checkpoints import partitioned as checkpoints_partitioned
 
 
 MapResult = checkpoints_partitioned.MapResult
-Mesh = checkpoints_partitioned.Mesh
 PyTree = checkpoints_partitioned.PyTree
 ThreadPool = checkpoints_partitioned.ThreadPool
 
@@ -35,10 +34,7 @@ class PeriodicSaveCheckpoint(periodic_actions.PeriodicCallback):
   """Saves checkpoints of a partitioned training state periodically.
 
   Example:
-    saver = PeriodicSaveCheckpoint(
-      prefix='/tmp/ckpt',
-      state_axis_resources=state_axis_resources,
-      every_steps=10)
+    saver = PeriodicSaveCheckpoint(prefix='/tmp/ckpt', every_steps=10)
     for step in range(100):
       state = update_state(...)
       saver(step=step, state=state)  # Saves at steps 0, 10, 20, 30, ...
@@ -48,8 +44,6 @@ class PeriodicSaveCheckpoint(periodic_actions.PeriodicCallback):
       self,
       *,
       prefix: str,
-      state_axis_resources: PyTree,
-      mesh: Optional[Mesh] = None,
       num_shards: int = 0,
       num_threads: Optional[int] = None,
       wait_seconds: Optional[int] = None,
@@ -67,12 +61,6 @@ class PeriodicSaveCheckpoint(periodic_actions.PeriodicCallback):
       prefix: Prefix for the checkpoint files. The step number is appended to
         this when a checkpoint is written (e.g. prefix='ckpt_' gives checkpoints
         'ckpt_1', 'ckpt_2', ...).
-      state_axis_resources: PyTree with PartitionSpec leaves, with the same
-        structure as the `state` to checkpoint in every step, indicating how
-        each axis of the corresponding array is partitioned across the axes of
-        the logical device mesh.
-      mesh: Logical device mesh used with pjit. If None, the active mesh will
-        be used.
       num_shards: Number of checkpoint shards. If `num_shards <= 0`, the minimum
         number of shards will be used. If `num_shards > 0`, this number is only
         tentative.
@@ -106,8 +94,8 @@ class PeriodicSaveCheckpoint(periodic_actions.PeriodicCallback):
         every_secs=every_secs,
         on_steps=on_steps,
         callback_fn=self._make_callback_fn(
-            prefix, state_axis_resources, mesh, num_shards, wait_seconds,
-            keep_last, keep_multiple, execute_async, self._thread_pool,
+            prefix, num_shards, wait_seconds, keep_last, keep_multiple,
+            execute_async, self._thread_pool,
             report_progress, report_progress_name),
         # Note: save_checkpoint() is still asynchronous. This just means that
         # we wait until the callback_fn returns.
@@ -176,13 +164,13 @@ class PeriodicSaveCheckpoint(periodic_actions.PeriodicCallback):
     try:
       self._async_result.get(wait_seconds)
       self._async_result = None
-    except TimeoutError:
+    except multiprocessing.context.TimeoutError as exc:
       raise TimeoutError('Timeout while writing checkpoint files after '
-                         f'{wait_seconds} seconds.')
+                         f'{wait_seconds} seconds.') from exc
 
-  def _make_callback_fn(self, prefix, state_axis_resources, mesh, num_shards,
-                        wait_seconds, keep_last, keep_multiple, execute_async,
-                        thread_pool, report_progress, report_progress_name):
+  def _make_callback_fn(self, prefix, num_shards, wait_seconds, keep_last,
+                        keep_multiple, execute_async, thread_pool,
+                        report_progress, report_progress_name):
 
     def callback_fn(step: int, t: float, state: PyTree):
       del t  # Unused.
@@ -199,11 +187,7 @@ class PeriodicSaveCheckpoint(periodic_actions.PeriodicCallback):
       # Save new checkpoint.
       self._async_result = checkpoints_partitioned.save_checkpoint(
           prefix=f'{prefix}_{step}',
-          # Note: saving is faster if we transfer the data from device to CPU
-          # in one go.
-          tree=jax.tree_map(np.asarray, state),
-          axis_resources=state_axis_resources,
-          mesh=mesh,
+          tree=state,
           num_shards=num_shards,
           thread_pool=thread_pool,
           makedirs=False,

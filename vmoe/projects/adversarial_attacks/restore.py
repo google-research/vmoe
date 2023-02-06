@@ -20,13 +20,14 @@ from absl import logging
 import flax.core
 import flax.traverse_util
 import jax
+from jax.experimental import maps
 import jax.numpy as jnp
 import ml_collections
 import optax
+from vmoe import checkpoints
 from vmoe import moe
 from vmoe import partitioning
 from vmoe import utils
-from vmoe.checkpoints import partitioned as checkpoints
 from vmoe.nn import routing
 import vmoe.nn.models
 
@@ -136,10 +137,9 @@ def restore_from_config(
   flax_module = model_class(*args, **kwargs.to_dict(), deterministic=True)
   # Obtain variables shapes. This does not initialize the model or does any
   # computations.
-  rng_keys = config.get('extra_rng_keys', ())
-  rng_keys = ('params',) + tuple(rng_keys)
-  rngs = utils.make_rngs(rng_keys=rng_keys, seed=0)
+  extra_rng_keys = tuple(config.get('extra_rng_keys', ()))
   def _init():
+    rngs = utils.make_rngs(('params',) + tuple(extra_rng_keys), 0)
     images = jnp.zeros(image_shape, dtype=jnp.float32)
     variables = flax_module.init(rngs, images)
     _, intermediates = flax_module.apply(
@@ -156,17 +156,21 @@ def restore_from_config(
   variables_axis_resources = partitioning.tree_axis_resources_from_regexes(
       tree=variables_shape,
       axis_resources_regexes=config.params_axis_resources)
+  variables_axis_resources = jax.tree_util.tree_map(
+      lambda s: maps.NamedSharding(mesh, s), variables_axis_resources)
+  variables_shape = jax.tree_util.tree_map(
+      lambda x, s: jax.ShapeDtypeStruct(x.shape, x.dtype, sharding=s),
+      variables_shape, variables_axis_resources)
   # TODO(jpuigcerver): Generalize this to models with other vars than params.
   variables = flax.core.freeze({
       'params':
-          checkpoints.restore_checkpoint(
+          checkpoints.restore_checkpoint_partitioned(
               prefix=checkpoint_prefix,
-              tree=variables_shape['params'],
-              axis_resources=variables_axis_resources['params'],
-              mesh=mesh),
+              tree=variables_shape['params']),
   })
   loss_fn = get_loss_including_auxiliary_fn(**config.get('loss'))
-  return flax_module, variables, variables_axis_resources, loss_fn, router_keys, rngs
+  return (flax_module, variables, variables_axis_resources, loss_fn,
+          router_keys, extra_rng_keys)
 
 
 def router_filter(mdl, _) -> bool:

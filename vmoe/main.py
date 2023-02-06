@@ -44,6 +44,11 @@ def main(argv: Sequence[str]) -> None:
   # Log JAX compilation steps.
   jax.config.update('jax_log_compiles', True)
   jax.config.update('jax_default_prng_impl', 'unsafe_rbg')
+  # Enable experimental xmap spmd lowering. Necessary for mixing pjit and xmap.
+  # Calling xmap from within pjit is necessary because pure_callback is not
+  # fully supported with pjit.
+  jax.config.update('experimental_xmap_spmd_lowering', True)
+  jax.config.update('experimental_xmap_spmd_lowering_manual', True)
   # Log useful information to identify the process running in the logs.
   logging.info('JAX process: %d / %d', jax.process_index(), jax.process_count())
   logging.info('JAX local devices: %r', jax.local_devices())

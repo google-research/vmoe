@@ -24,7 +24,7 @@ from typing import Any, Dict, Mapping
 import flax.serialization
 import jax
 import numpy as np
-import vmoe.checkpoints.types
+from vmoe.checkpoints import types
 
 # Public functions.
 __all__ = [
@@ -38,13 +38,13 @@ __all__ = [
 ]
 
 
-ArrayChunks = vmoe.checkpoints.types.ArrayChunks
-IndexInfo = vmoe.checkpoints.types.IndexInfo
-LazyArrayChunks = vmoe.checkpoints.types.LazyArrayChunks
+ArrayChunks = types.ArrayChunks
+IndexInfo = types.IndexInfo
+LazyArrayChunks = types.LazyArrayChunks
 PyTree = Any
-Slice = vmoe.checkpoints.types.Slice
-SliceNd = vmoe.checkpoints.types.SliceNd
-SliceNdArray = vmoe.checkpoints.types.SliceNdArray
+Slice = types.Slice
+SliceNd = types.SliceNd
+SliceNdArray = types.SliceNdArray
 
 
 msgpack = flax.serialization.msgpack

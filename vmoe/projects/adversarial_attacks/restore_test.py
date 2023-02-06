@@ -171,7 +171,8 @@ class GetLossWithAuxiliaryFnTest(parameterized.TestCase):
 
 class RestoreFromConfigTest(absltest.TestCase):
 
-  @mock.patch.object(restore.checkpoints, 'restore_checkpoint', autospec=True)
+  @mock.patch.object(restore.checkpoints, 'restore_checkpoint_partitioned',
+                     autospec=True)
   def test(self, unused_mock_restore_checkpoint):
     config = restore.ml_collections.ConfigDict({
         'model': {
@@ -191,11 +192,11 @@ class RestoreFromConfigTest(absltest.TestCase):
         'params_axis_resources': [],
     })
     mesh = restore.create_mesh(1)
-    flax_module, _, _, _, router_keys, rngs = restore.restore_from_config(
+    flax_module, _, _, _, router_keys, rng_keys = restore.restore_from_config(
         config, '/foo/bar', (1, 16, 16, 3), mesh)
     self.assertIsInstance(flax_module, restore.vmoe.nn.models.VisionTransformer)
     self.assertEmpty(router_keys)
-    self.assertSetEqual(set(rngs.keys()), {'params'})
+    self.assertEqual(rng_keys, ())
 
 
 if __name__ == '__main__':

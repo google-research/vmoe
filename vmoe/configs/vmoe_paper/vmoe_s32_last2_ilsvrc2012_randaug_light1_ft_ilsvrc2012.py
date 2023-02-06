@@ -80,13 +80,23 @@ def get_config():
   config.model = get_vmoe_config(config.description)
   # Model initialization from the released checkpoints.
   config.initialization = ml_collections.ConfigDict({
-      'name': 'initialize_from_vmoe_release',
+      'name': 'initialize_from_vmoe',
       'prefix':
           'gs://vmoe_checkpoints/vmoe_s32_last2_ilsvrc2012_randaug_light1',
-      # Altough the upstream model was trained on the same dataset, we used
-      # sigmoid_xent for pre-training, while here we use softmax_xent. Thus, we
-      # *keep the randomly initialized head*.
-      'keep': ['head'],
+      'rules': [
+          ('head', ''),              # Do not restore the head params.
+          ('pre_logits/.*', ''),     # Do not restore the pre_logits params.
+          # We pre-trained on 224px and are finetuning on 384px.
+          # Resize positional embeddings.
+          ('^(.*/pos_embedding)$', r'params/\1', 'vit_zoom'),
+          # Restore the rest of parameters without any transformation.
+          ('^(.*)$', r'params/\1'),
+      ],
+      # We are not initializing several arrays from the new train state, do not
+      # raise an exception.
+      'raise_if_target_unmatched': False,
+      # Partition MoE parameters when reading from the checkpoint.
+      'axis_resources_regexes': [('Moe/Mlp/.*', ('expert',))],
   })
   config.optimizer = ml_collections.ConfigDict({
       'name': 'sgd',

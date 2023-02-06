@@ -80,7 +80,6 @@ class PeriodicSaveCheckpointTest(absltest.TestCase):
     prefix = os.path.join(self.create_tempdir().full_path, 'ckpt')
     saver = periodic_actions.PeriodicSaveCheckpoint(
         prefix=prefix,
-        state_axis_resources={},
         every_steps=4)
     for step in range(1, 10):
       saver(step=step, state={})
@@ -88,13 +87,13 @@ class PeriodicSaveCheckpointTest(absltest.TestCase):
     call_args_list = mock_save_checkpoint.call_args_list
     self.assertLen(call_args_list, 2)
     self.assertEqual(call_args_list[0],
-                     mock.call(prefix=prefix + '_4', num_shards=0, mesh=None,
+                     mock.call(prefix=prefix + '_4', num_shards=0,
                                makedirs=False, overwrite=True, tree={},
-                               axis_resources={}, thread_pool=mock.ANY))
+                               thread_pool=mock.ANY))
     self.assertEqual(call_args_list[1],
-                     mock.call(prefix=prefix + '_8', num_shards=0, mesh=None,
+                     mock.call(prefix=prefix + '_8', num_shards=0,
                                makedirs=False, overwrite=True, tree={},
-                               axis_resources={}, thread_pool=mock.ANY))
+                               thread_pool=mock.ANY))
     saver.__del__()
 
   def test_report_progress(self):
@@ -104,7 +103,6 @@ class PeriodicSaveCheckpointTest(absltest.TestCase):
     prefix = os.path.join(self.create_tempdir().full_path, 'ckpt')
     saver = periodic_actions.PeriodicSaveCheckpoint(
         prefix=prefix,
-        state_axis_resources={},
         every_steps=4,
         report_progress=mock_report_progress,
         report_progress_name='foo')

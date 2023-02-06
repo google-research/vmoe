@@ -159,9 +159,20 @@ class FewShotPeriodicAction(periodic_actions.PeriodicCallback):
           },
           size=prefetch_to_device)
 
-    # Function used to fold data in a tree of PRNGKey values, with the keys in
-    # rng_keys.
-    tree_fold_in_pjit = _make_tree_rngs_fold_in_pjit(rng_keys)
+    @functools.partial(
+        jax.experimental.pjit.pjit, in_axis_resources=(None, None, None),
+        out_axis_resources=None)
+    def make_fewshot_state_pjit(seed, sub_seed, step):
+      if rng_keys:
+        rng = jax.random.PRNGKey(seed)
+        rng = jax.random.fold_in(rng, sub_seed)
+        if seed_fold_in_step:
+          rng = jax.random.fold_in(rng, step)
+        rngs = jax.random.split(rng, len(rng_keys))
+        rngs = dict(zip(rng_keys, rngs))
+      else:
+        rngs = {}
+      return FewShotState(rngs=rngs)
 
     def callback_fn(step: int, t: Optional[float], variables: PyTree):
       del t  # Unused.
@@ -169,19 +180,14 @@ class FewShotPeriodicAction(periodic_actions.PeriodicCallback):
       all_results = {}
       metrics = {}
       t0 = time.time()
-      rngs = vmoe.utils.make_rngs(rng_keys, seed)
-      if seed_fold_in_step:
-        rngs = tree_fold_in_pjit(rngs, step)
       for sub_seed in range(seeds_per_step):
-        # These are potentially used by the model, if it is non-deterministic.
-        rngs = tree_fold_in_pjit(rngs, sub_seed)
         # This is used to permute the fewshot examples.
         permute_seed = hash(
             (seed, step, sub_seed) if seed_fold_in_step else (seed, sub_seed))
         for name, (tr_ds, te_ds, num_classes) in datasets_info.items():
           t0_d = time.time()
           # Compute fewshot metrics.
-          state = FewShotState(rngs=rngs)
+          state = make_fewshot_state_pjit(seed, sub_seed, step)
           name = name if seeds_per_step == 1 else f'{name}-seed-{sub_seed}'
           all_results[name] = _compute_fewshot_metrics(
               representation_fn, shots, l2_regs, num_classes, state, variables,
@@ -330,18 +336,6 @@ def _get_datasets(
             _get_num_classes(name))
       for key, (name, tr_split, te_split) in datasets.items()
   }
-
-
-def _make_tree_rngs_fold_in_pjit(rng_keys: Sequence[str]):
-
-  def tree_fold_in(tree, data):
-    return jax.tree_util.tree_map(lambda x: jax.random.fold_in(x, data), tree)
-
-  tree_axis_resources = {key: PartitionSpec() for key in rng_keys}
-  return jax.experimental.pjit.pjit(
-      tree_fold_in,
-      in_axis_resources=(tree_axis_resources, PartitionSpec()),
-      out_axis_resources=tree_axis_resources)
 
 
 def _make_fewshot_step_pjit(

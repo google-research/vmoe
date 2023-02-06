@@ -32,6 +32,18 @@ ThreadPool = multiprocessing.pool.ThreadPool
 CHECKPOINT_REGEX = re.compile(
     r'^(.*?)(_[0-9]+)?(\.[a-zA-Z]+)?(-[0-9]+-of-[0-9]+)?$')
 
+__all__ = [
+    'add_shard_suffix',
+    'find_latest_complete_checkpoint_for_prefix',
+    'remove_checkpoints',
+    'remove_shard_suffix',
+    'restore_checkpoint',
+    'restore_multiple_checkpoints',
+    'save_checkpoint',
+    'save_checkpoint_async',
+    'save_multiple_checkpoints_async',
+]
+
 
 def add_shard_suffix(filepath: str, shard: int, shard_count: int) -> str:
   return f'{filepath}-{shard:05d}-of-{shard_count:05d}'

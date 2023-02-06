@@ -12,47 +12,70 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Functions for checkpointing partitioned models."""
+"""Functions for checkpointing PyTrees with jax.Array leaves.
+
+jax.Array is a unified type that subsumes many of the existing array types in
+JAX, that different functions (jit, pmap, pjit, xmap, ...) returned. The main
+benefit of jax.Array is that it was designed to make parallelism (a.k.a. model
+partitioning) a core feature of JAX, and simplifies and unifies JAX internals.
+
+The two main functions of this module are `save_checkpoint`, used to save a
+sharded checkpoint of a PyTree of jax.Arrays (possibly in a multi-process
+system); and `restore_checkpoint`, which restores the values of a PyTree from
+a sharded checkpoint.
+
+Sharded checkpoints are made of an index file (with the '.index' suffix), and
+a set of data shards (with the '.data-nnnnn-of-NNNNN' suffix). When running the
+save and restore functions, each process will handle their corresponding chunks
+of each array to save and restore the data in an efficient manner, in a
+multi-process system. Sharded checkpoints are also useful for non-partitioned if
+the checkpointing is I/O bounded.
+
+"""
 import collections
 import enum
 import functools
-import itertools
+import multiprocessing.pool
 import os
-from typing import Any, Iterator, Iterable, Mapping, Optional, Sequence, Tuple, Union
+from typing import Any, Dict, Iterator, List, Optional, Sequence, Tuple
 
+from absl import logging
 import jax
-from jax._src import sharding
-from jax.experimental import maps
-from jax.experimental import pjit
+from jax._src.array import Shard
 import numpy as np
-import vmoe.checkpoints.base
-import vmoe.checkpoints.serialization
-import vmoe.checkpoints.types
-import vmoe.multihost_utils
-import vmoe.utils
+from vmoe import multihost_utils
+from vmoe import utils
+from vmoe.checkpoints import base
+from vmoe.checkpoints import serialization
+from vmoe.checkpoints import types
 
 __all__ = ['restore_checkpoint', 'save_checkpoint']
 
-
-Array = Union[jax.numpy.ndarray, np.ndarray]
-ArrayChunks = vmoe.checkpoints.types.ArrayChunks
-IndexInfo = vmoe.checkpoints.types.IndexInfo
-LazyArrayChunks = vmoe.checkpoints.types.LazyArrayChunks
-MapResult = vmoe.checkpoints.base.MapResult
-Mesh = jax.sharding.Mesh
-NamedSharding = sharding.NamedSharding
-ParsedPartitionSpec = pjit.ParsedPartitionSpec
-PartitionSpec = jax.sharding.PartitionSpec
+ArrayChunks = types.ArrayChunks
+IndexInfo = types.IndexInfo
+LazyArrayChunks = types.LazyArrayChunks
+MapResult = multiprocessing.pool.MapResult
+OpShardingSharding = jax.sharding.OpShardingSharding
 PyTree = Any
-Slice = vmoe.checkpoints.types.Slice
-SliceNd = vmoe.checkpoints.types.SliceNd
-SliceNdArray = vmoe.checkpoints.types.SliceNdArray
-ThreadPool = vmoe.checkpoints.base.ThreadPool
+Sharding = jax.sharding.Sharding
+Slice = types.Slice
+SliceNd = types.SliceNd
+ThreadPool = multiprocessing.pool.ThreadPool
+tree_flatten = jax.tree_util.tree_flatten
+tree_map = jax.tree_util.tree_map
 
-from_state_dict = vmoe.checkpoints.serialization.from_state_dict
-to_state_dict = vmoe.checkpoints.serialization.to_state_dict
-safe_map = vmoe.utils.safe_map
-safe_zip = vmoe.utils.safe_zip
+# When checkpoints are restored, we can load multiple files concurrently, using
+# at most this number of bytes.
+MAX_CONCURRENT_BYTES = 8_589_934_592  # 8GB.
+# When checkpoints are saved, we chunk each array in smaller pieces so that each
+# chunk has at most this number of bytes.
+MAX_CHUNK_BYTES = 268_435_456  # 256MB.
+
+
+from_state_dict = serialization.from_state_dict
+to_state_dict = serialization.to_state_dict
+safe_map = utils.safe_map
+safe_zip = utils.safe_zip
 
 
 class Version(enum.Enum):
@@ -60,651 +83,528 @@ class Version(enum.Enum):
   V1 = '20220622'
 
 
-def restore_checkpoint(*,
-                       prefix: str,
-                       tree: Optional[PyTree],
-                       axis_resources: Optional[PyTree],
-                       mesh: Optional[Mesh] = None,
-                       thread_pool: Optional[ThreadPool] = None) -> PyTree:
-  """Restores a PyTree of partitioned arrays from sharded checkpoint.
+def restore_checkpoint(
+    prefix: str,
+    tree: Optional[PyTree],
+    *,
+    thread_pool: Optional[ThreadPool] = None,
+    max_concurrent_bytes: Optional[int] = MAX_CONCURRENT_BYTES) -> PyTree:
+  """Restores a PyTree with jax.Array leaves from sharded checkpoint.
 
   Args:
     prefix: Prefix of the checkpoint file (e.g. "/tmp/checkpoint_step_2").
-    tree: Optional PyTree with the expected structure to restore. If given,
-      and the restored structure doesn't match an exception is raised.
-    axis_resources: Optional PyTree with PartitionSpec leaves, with the same
-      structure as `tree`, indicating how each axis of the corresponding array
-      is partitioned across the axes of the logical mesh.
-    mesh: Logical mesh, indicating which device holds each element of the mesh.
+    tree: Optional PyTree with the expected structure to restore. If None,
+      a nested dict is returned (i.e. the FLAX state dict). If given, the
+      restored structure must match the given one.
     thread_pool: ThreadPool used to read the checkpoint files asynchronously.
       If None, a new pool will be created.
+    max_concurrent_bytes: Maximum number of bytes to read concurrentlly. This
+      maximum is useful to prevent out of memory errors while reading files from
+      disk. If None, no maximum is enforced.
 
   Returns:
     The restored PyTree.
   """
-  if mesh is None:
-    mesh = _get_current_mesh()
-  if mesh.empty:
-    raise ValueError("You must pass a non-empty mesh. If you didn't pass any, "
-                     "check that you called restore_checkpoint from a "
-                     "jax.sharding.Mesh context.")
   # Restore index as a state dict.
-  index = vmoe.checkpoints.base.restore_checkpoint(prefix + '.index')
+  index = base.restore_checkpoint(prefix + '.index')
   version = Version(index.get('version', Version.UNKNOWN))
   shard_count = index['shard_count']
   index = index['index']
   if version == Version.UNKNOWN:
-    if tree is None and axis_resources is None:
-      raise ValueError(
-          'You must specify the tree and/or axis_resources arguments when '
-          f'restoring checkpoints from {Version.UNKNOWN}.')
-
-    # The index has the same structure as the input tree and the axis_resources.
-    # Obtain such structure before calling _restore_checkpoint.
-    index = from_state_dict(target=tree or axis_resources, state=index)
-    return _restore_checkpoint_from_index(
-        prefix=prefix,
-        shard_count=shard_count,
-        index=index,
-        axis_resources=axis_resources,
-        mesh=mesh,
-        thread_pool=thread_pool)
+    return _restore_checkpoint_from_index_unknown(
+        prefix, shard_count, index, tree, thread_pool=thread_pool,
+        max_concurrent_bytes=max_concurrent_bytes)
   if version == Version.V1:
-    if axis_resources is None:
-      axis_resources_state_dict = None
-    else:
-      axis_resources_state_dict = to_state_dict(axis_resources)
-    state_dict = _restore_checkpoint_from_index(
-        prefix=prefix,
-        shard_count=shard_count,
-        index=index,
-        axis_resources=axis_resources_state_dict,
-        mesh=mesh,
-        thread_pool=thread_pool)
-    if (tree or axis_resources) is not None:
-      return from_state_dict(target=tree or axis_resources, state=state_dict)
-    else:
-      return state_dict
-  raise ValueError(f'Unsupported checkpoint version: {version!r}')
+    return _restore_checkpoint_from_index_v1(
+        prefix, shard_count, index, tree, thread_pool=thread_pool,
+        max_concurrent_bytes=max_concurrent_bytes)
+  raise NotImplementedError(f'Unsupported checkpoint version: {version!r}')
 
 
-def _restore_checkpoint_from_index(
-    *,
+def save_checkpoint(
     prefix: str,
-    shard_count: int,
-    index: PyTree,
-    axis_resources: Optional[PyTree],
-    mesh: Mesh,
-    thread_pool: Optional[ThreadPool] = None) -> PyTree:
-  """Restores a PyTree of partitioned arrays from an index."""
-  # axis_resources indicates how the data to be loaded will be partitioned.
-  # If no axis_resources is given, assume that we don't want any partitioning.
-  # This implies that all devices will store a copy of all the parameters, thus
-  # all processes will have to read from all checkpoint shards.
-  if axis_resources is None:
-    axis_resources = jax.tree_map(lambda _: PartitionSpec(), index)
-  # Flatten index and axis_resources. Check that the two are compatible.
-  index, struct = jax.tree_flatten(index)
-  axis_resources, struct2 = jax.tree_flatten(axis_resources)
-  if struct != struct2:
-    raise ValueError(f'The tree structs do not match.\n'
-                     f'index: {struct}\n'
-                     f'axis_resources: {struct2}')
-  # Get local (w.r.t. process) and global ShapedArray of all arrays.
-  # This indicates the shape and type of all the arrays in the tree to restore.
-  global_avals = [x.global_shape for x in index]
-  positional_semantics = [_PositionalSemantics.LOCAL for _ in global_avals]
-  shardings = [NamedSharding(mesh, spec) for spec in axis_resources]
-  parsed_axis_resources = [spec._parsed_pspec for spec in shardings]  # pylint: disable=protected-access
-  shardings = [
-      pjit.to_op_sharding_sharding(s, a.ndim)
-      for a, s in zip(global_avals, shardings)
-  ]
-  local_avals = pjit.global_to_local(positional_semantics, global_avals,
-                                     shardings, mesh)
-  local_mesh = mesh.local_mesh
-  # For each array to restore, get local/global SliceNdArrays indicating which
-  # local/global slice is stored in each device of the local/global mesh.
-  local_slices_arrays = _make_slice_nd_arrays(
-      local_avals, parsed_axis_resources, local_mesh)
-  global_slices_arrays = _make_slice_nd_arrays(
-      global_avals, parsed_axis_resources, mesh)
-  # For each array to restore: get a set of (local slice, global slice) that
-  # will be handled by the devices of the current process.
-  local_global_slices = _pair_local_and_global_slices(
-      local_slices_arrays, global_slices_arrays, mesh, local_mesh)
-  local_global_slices = list(local_global_slices)
-  # For each array to restore: get the (global) slices in the checkpoint and the
-  # shard that stores the corresponding chunk of data. The result is a sequence
-  # of (ckpt slice, shard).
-  ckpt_slices_and_shards = safe_map(
-      lambda x, y: tuple(safe_zip(x, y)),
-      [x.global_slices for x in index], [x.shards for x in index])
-  # Create a map from shard number, to array index, to a list of slices to load
-  # from that shard. The list has tuple (ckpt slice, ckpt subslice,
-  # local subslice).
-  shard2array2slices = collections.defaultdict(
-      lambda: collections.defaultdict(list))
-  for a, (array_local_global_slices, array_ckpt_slices_and_shards) in enumerate(
-      zip(local_global_slices, ckpt_slices_and_shards)):
-    for shard, *slices in _match_checkpoint_to_local_slices(
-        array_local_global_slices, array_ckpt_slices_and_shards):
-      shard2array2slices[shard][a].append(tuple(slices))
-  shard2array2slices = {
-      vmoe.checkpoints.base.add_shard_suffix(prefix + '.data', shard,
-                                             shard_count): value
-      for shard, value in shard2array2slices.items()
-  }
-  # Allocate memory for all local arrays to restore. The values of these arrays
-  # will be restored asynchronously with _restore_array_chunks.
-  local_arrays = [
-      np.zeros(aval.shape, dtype=aval.dtype) for aval in local_avals
-  ]
-  thread_pool = thread_pool or ThreadPool()
-  # pylint: disable=g-long-lambda
-  thread_pool.map(
-      lambda args: _restore_array_chunks(args[0], local_arrays, args[1]),
-      shard2array2slices.items())
-  # pylint: enable=g-long-lambda
-  return struct.unflatten(local_arrays)
-
-
-def save_checkpoint(*,
-                    prefix: str,
-                    tree: PyTree,
-                    axis_resources: PyTree,
-                    mesh: Optional[Mesh] = None,
-                    num_shards: int = 0,
-                    overwrite: bool = True,
-                    makedirs: bool = True,
-                    thread_pool: Optional[ThreadPool] = None,
-                    version: Version = Version.V1) -> MapResult:
-  """Saves a PyTree of partitioned arrays into a sharded checkpoint.
+    tree: PyTree,
+    *,
+    num_shards: Optional[int] = None,
+    overwrite: bool = True,
+    makedirs: bool = True,
+    thread_pool: Optional[ThreadPool] = None,
+    max_chunk_bytes: Optional[int] = MAX_CHUNK_BYTES,
+    version: Version = Version.V1) -> MapResult:
+  """Saves a PyTree with jax.Array leaves to a sharded checkpoint.
 
   Args:
     prefix: Prefix of the checkpoint file (e.g. "/tmp/checkpoint_step_2").
-    tree: PyTree with ndarray leaves to checkpoint.
-    axis_resources: PyTree with PartitionSpec leaves, with the same structure as
-      `tree`, indicating how each axis of the corresponding array is
-      partitioned across the axes of the logical mesh.
-    mesh: Logical mesh, indicating which device holds each element of the mesh.
-    num_shards: Number of checkpoint shards. If `num_shards <= 0`, the minimum
-      number of shards will be used. If `num_shards > 0`, this number is only
-      tentative.
+    tree: PyTree to save, with jax.Array leaves.
+    num_shards: Number of checkpoint shards. If None, `jax.process_count()` is
+      used. This number should be always larger than or equal to the number of
+      processes.
     overwrite: If True, rewrites any file that might exist. If False, raises an
       exception if a given file existed.
     makedirs: If True, create the base dir of prefix if it doesn't exist.
       If False, the existence of the base dir is assumed.
     thread_pool: ThreadPool used to write the checkpoint files asynchronously.
       If None, a new pool will be created.
+    max_chunk_bytes: Optional integer with the maximum size (in bytes) of each
+      array chunk. If an array is bigger than this, it will be broken into
+      smaller pieces so that each chunk has at most this number of bytes.
+      This is useful to write multiple chunks of a big array into several
+      checkpoint shards to increase the speed of saving/restoring checkpoints.
     version: Write checkpoints using this version. DO NOT CHANGE UNLESS YOU KNOW
       WHAT YOU ARE DOING.
 
   Returns:
     A MapResult object.
   """
-  # We convert the tree (and axis_resource) to a pure nested dictionary here.
-  # Before Version.V1, this was done implicitly in the subsequent calls to the
-  # function base.save_checkpoint(). However, the leaves of the PyTree were
-  # given by jax.tree_leaves(tree), which may give a different order than
-  # jax.tree_leaves(to_state_dict(tree)). When this happened, this prevented us
-  # to restore the checkpoint without passing any tree/axis_resources. Yet, this
-  # is a useful feature if we want to restore the checkpoint as a pure Python
-  # dictionary (i.e. a Flax state dict), when we don't know the original
-  # structure of the PyTree in the checkpoint.
-  if version is not Version.UNKNOWN:
-    tree = to_state_dict(tree)
-    axis_resources = to_state_dict(axis_resources)
-  if mesh is None:
-    mesh = _get_current_mesh()
-  if mesh.empty:
-    raise ValueError("You must pass a non-empty mesh. If you didn't pass any, "
-                     "check that you called save_checkpoint from a "
-                     "jax.sharding.Mesh context.")
-  filepath_map = _make_save_checkpoint_filepath_map(
-      prefix, tree, axis_resources, mesh, num_shards, version)
+  assert version == Version.V1, f'{version=} != {Version.V1}'
+  tree = to_state_dict(tree)
+
+  leaves, struct = tree_flatten(tree)
+  if not all(isinstance(x, jax.Array) for x in leaves):
+    raise ValueError('All leaves in the input tree must be jax.Array.')
+  # Start asynchronous copy to host memory.
+  tree_map(lambda x: x.copy_to_host_async(), leaves)
+
+  if num_shards is None or num_shards < jax.process_count():
+    if num_shards is not None:
+      logging.warning(
+          'While saving checkpoint with prefix=%r we found num_shards=%d and '
+          'process_count=%d. Resetting num_shards=%d.',
+          prefix, num_shards, jax.process_count(), jax.process_count())
+    num_shards = jax.process_count()
+
+  bytes_per_shard = [0] * num_shards
+  index_leaves = []
+  # Dictionary with the checkpoint shards handled by the current process.
+  ckpt_shard_to_lazy_array_chunks = {
+      i: LazyArrayChunks()
+      for i in range(num_shards)
+      if i % jax.process_count() == jax.process_index()
+  }
+  for i, arr in enumerate(leaves):
+    slice_to_arr_shards = _create_map_slicend_to_array_shards(
+        arr, max_chunk_bytes)
+    slice_to_ckpt_shard = _create_map_slicend_to_checkpoint_shard(
+        slice_to_arr_shards, arr.dtype.itemsize, bytes_per_shard)
+    index_leaves.append(_make_index_info(slice_to_ckpt_shard, arr))
+    _update_lazy_array_chunks_with_leaf(i, slice_to_arr_shards,
+                                        slice_to_ckpt_shard,
+                                        ckpt_shard_to_lazy_array_chunks)
+  # Convert jax.Arrays (which might be on-device) to Numpy arrays and replace
+  # references in the LazyArrayChunks structures. This is important when
+  # checkpointing happens asynchronously, since JAX could release a device
+  # buffer that hasn't been checkpointed yet.
+  _replace_jax_with_numpy_in_lazy_array_chunks(ckpt_shard_to_lazy_array_chunks)
+  filepath_to_data = _create_map_filepath_to_data(
+      prefix, struct, index_leaves, ckpt_shard_to_lazy_array_chunks,
+      num_shards, version)
+  del ckpt_shard_to_lazy_array_chunks
+
   if makedirs:
-    # Process 0 creates the workdir if it doesn't exist. All processes wait
-    # until it's done.
-    wdir = os.path.dirname(prefix)
-    if jax.process_index() == 0:
-      vmoe.checkpoints.base.gfile.makedirs(wdir)
-    vmoe.multihost_utils.sync_devices(f'checkpoints:mkdir:{wdir}')
-  # Write checkpoint shards asynchronously.
-  return vmoe.checkpoints.base.save_multiple_checkpoints_async(
-      filepath_map,
+    _make_dir_sync(os.path.dirname(prefix))
+  return base.save_multiple_checkpoints_async(
+      filepath_to_data,
       overwrite=overwrite,
       makedirs=False,
       thread_pool=thread_pool)
 
 
-# pylint: disable=protected-access
-_PositionalSemantics = maps._PositionalSemantics
-# pylint: enable=protected-access
-
-
-def _convert_native_to_slices_nd_array(
-    slices_array: np.ndarray,
-    aval: jax.ShapedArray) -> SliceNdArray:
-  """Converts a ndarray with tuples of Python `slice` to a SliceNdArray."""
-  original_shape = slices_array.shape
-  slices_array = slices_array.flatten()
-  for i, slices in enumerate(slices_array):
-    assert all(isinstance(s, slice) for s in slices)
-    # Convert the slice's start/stop from None to int.
-    # start=None -> 0, stop=None -> size.
-    slices = (slice(s.start or 0, size if s.stop is None else s.stop, s.step)
-              for s, size in zip(slices, aval.shape))
-    slices_array[i] = SliceNd(Slice(s) for s in slices)
-  return SliceNdArray(slices_array.reshape(original_shape))
-
-
-def _create_lazy_array_chunks_per_shard(
-    ndarrays: Sequence[Array],
-    local_slices_arrays: Sequence[SliceNdArray],
-    global_slices_arrays: Sequence[SliceNdArray],
-    shard_per_global_slices: Sequence[Sequence[int]],
-    process_per_shard: Tuple[int, ...],
-    mesh: Mesh,
-    local_mesh: Optional[Mesh],
-) -> Mapping[int, LazyArrayChunks]:
-  """Creates mapping from shard to LazyArrayChunks.
-
-  A "chunk" is the result of taking a SliceNd object and using it to slice
-  a particular array. A LazyArrayChunks object represents all the chunks from
-  all arrays that must be written on a particular checkpoint shard. We don't
-  directly chunk the arrays here, since this could incur in some extra memory
-  used (at the moment of writing a shard: original data + chunks + serialized
-  chunks).
-
-  Args:
-    ndarrays: Sequence of input arrays.
-    local_slices_arrays: Sequence of SliceNdArray indicating how each input
-      array is partitioned across the local (for the current process) mesh of
-      devices.
-    global_slices_arrays: Sequence of SliceNdArray indicating how each input
-      array is partitioned across the global mesh of devices.
-    shard_per_global_slices: Sequence of sequences of integers that indicate,
-      for each input array, which shard will write the corresponding (global)
-      slice of the array.
-    process_per_shard: Tuple of integers indicating which process handles each
-      shard.
-    mesh: Global mesh of devices.
-    local_mesh: Local (restricted to a given process) mesh of devices.
-
-  Returns:
-    A dictionary mapping shards (integers) to LazyArrayChunks.
-  """
-  local_mesh = local_mesh or mesh.local_mesh
-  # For each leaf array, we pair the local slices and the global slices.
-  # The pairs are unique (repetitions due to replication have been removed).
-  local_global_slices = _pair_local_and_global_slices(local_slices_arrays,
-                                                      global_slices_arrays,
-                                                      mesh, local_mesh)
-  output = collections.defaultdict(LazyArrayChunks)
-  outer_zip = safe_zip(ndarrays, global_slices_arrays, local_global_slices,
-                       shard_per_global_slices)
-  for index, (ndarray, global_slice_ndarray, local_global_slice_nds,
-              shard_per_slice) in enumerate(outer_zip):
-    global2local_slices = dict((gs, ls) for ls, gs in local_global_slice_nds)
-    global_slice_ndarray = sorted(set(global_slice_ndarray.flatten()))
-    for global_slice, shard in safe_zip(global_slice_ndarray, shard_per_slice):
-      if process_per_shard[shard] == jax.process_index():
-        local_slice = global2local_slices[global_slice]
-        output[shard].add(index, ndarray, local_slice, global_slice)
+def _create_local_buffers(
+    sharding: Sharding,
+    global_shape: Tuple[int, ...],
+    dtype,
+) -> Dict[SliceNd, np.ndarray]:
+  """Creates arrays to store values of addressable array shards."""
+  shard_shape = sharding.shard_shape(global_shape)
+  output = {}
+  for index in sharding.addressable_devices_indices_map(global_shape).values():
+    global_slice = _shard_index_to_slicend(index, global_shape)
+    if global_slice not in output:
+      output[global_slice] = np.zeros(shard_shape, dtype=dtype)
   return output
 
 
-def _get_current_mesh() -> Mesh:
-  return maps.thread_resources.env.physical_mesh
-
-
-def _intersect_slice_nd(
-    ckpt_slice_nd: SliceNd,
-    global_slice_nd: SliceNd,
-    local_slice_nd: SliceNd,
-) -> Optional[Tuple[SliceNd, SliceNd]]:
-  """Finds the intersection of a checkpoint SliceNd with a local SliceNd."""
-  intersect_slice_nd_ckpt, intersect_slice_nd_local = [], []
-  for c, g, l in vmoe.utils.safe_zip(ckpt_slice_nd, global_slice_nd,
-                                     local_slice_nd):
-    # Assumes that step=None, and that start/stop are not None.
-    start, stop = max(c.start, g.start), min(c.stop, g.stop)
-    if stop <= start:
-      return None
-    ckpt_stop = None if stop == np.inf else stop - c.start
-    intersect_slice_nd_ckpt.append(Slice(start - c.start, ckpt_stop))
-    intersect_slice_nd_local.append(
-        Slice(start - g.start + l.start, stop - g.start + l.start))
-  return SliceNd(intersect_slice_nd_ckpt), SliceNd(intersect_slice_nd_local)
-
-
-def _make_save_checkpoint_filepath_map(
-    prefix: str, tree: PyTree, axis_resources: PyTree, mesh: Mesh,
-    num_shards: int = 0, version: Version = Version.V1):
-  """Makes a dictionary of filepaths mapping to the content that must be serialized."""
-  filepath_map = {}  # Result.
-  tree_leaves, struct = jax.tree_flatten(tree)
-  axis_resources, struct2 = jax.tree_flatten(axis_resources)
-  if struct != struct2:
-    raise ValueError('The tree structs do not match.\n'
-                     f'tree: {struct}\n'
-                     f'axis_resources: {struct2}')
-  # Get local (w.r.t. process) and global ShapedArray of all arrays.
-  # This indicates the shape and type of all the arrays in the input tree.
-  local_avals = [
-      x.aval if hasattr(x, 'aval') else jax.ShapedArray(x.shape, x.dtype)
-      for x in tree_leaves
-  ]
-  positional_semantics = [_PositionalSemantics.LOCAL for _ in local_avals]
-  shardings = [NamedSharding(mesh, spec) for spec in axis_resources]
-  parsed_axis_resources = [spec._parsed_pspec for spec in shardings]  # pylint: disable=protected-access
-  shardings = [
-      pjit.to_op_sharding_sharding(s, a.ndim)
-      for a, s in zip(local_avals, shardings)
-  ]
-  global_avals = pjit.local_to_global(positional_semantics, local_avals,
-                                      shardings, mesh)
-  local_mesh = mesh.local_mesh
-  # For each input array, get local/global SliceNdArrays indicating which
-  # local/global slice is stored in each device of the local/global mesh.
-  local_slices_arrays = _make_slice_nd_arrays(
-      local_avals, parsed_axis_resources, local_mesh)
-  global_slices_arrays = _make_slice_nd_arrays(
-      global_avals, parsed_axis_resources, mesh)
-  # `shard_per_global_slices` contains, for each input array, a sequence of
-  # integers indicating which shard must write each of the global slices of the
-  # corresponding array. Its size is that of the number of different slices of
-  # the corresponding input array.
-  # `process_per_shard` is a tuple of integers denoting the `process_index` of
-  # the process in charge of writing the corresponding checkpoint shard.
-  shard_per_global_slices, process_per_shard = _slice_nd_arrays_to_shards(
-      global_slices_arrays, mesh.devices, num_shards)
-  # It's possible that some shards are empty, if so remove unused shards.
-  if num_shards > 0:
-    shard_per_global_slices, process_per_shard = _remove_unused_shards(
-        shard_per_global_slices, process_per_shard)
-  # Create LazyArrayChunks for each shard. A "chunk" is the result of slicing
-  # an array with some (local) SliceNd. Instead of chunking the arrays here,
-  # we'll chunk them on the fly when the LazyArrayChunks are serialized, to
-  # prevent unnecessary copies of the data.
-  lazy_array_chunks_per_shard = _create_lazy_array_chunks_per_shard(
-      tree_leaves, local_slices_arrays, global_slices_arrays,
-      shard_per_global_slices, process_per_shard, mesh, local_mesh)
-  shard_count = len(process_per_shard)
+def _create_map_filepath_to_data(
+    prefix: str,
+    struct,
+    index_leaves: List[IndexInfo],
+    ckpt_shard_to_lazy_array_chunks: Dict[int, LazyArrayChunks],
+    shard_count: int,
+    version: Version = Version.V1,
+) -> Dict[str, Any]:
+  """Creates a map from checkpoint shard filenames to the contents to store."""
+  shard_fpath_fn = functools.partial(
+      base.add_shard_suffix,
+      filepath=prefix + '.data',
+      shard_count=shard_count)
+  filepath_to_data = {
+      shard_fpath_fn(shard=ckpt_shard): obj
+      for ckpt_shard, obj in ckpt_shard_to_lazy_array_chunks.items()
+  }
   if jax.process_index() == 0:
-    # We store an 'index' file using the process_index == 0, which contains
-    # global information about the checkpoint:
-    #   - The global shape of each array.
-    #   - The slices of each array.
-    #   - The shard in which each slice is located.
-    index_leaves = [
-        IndexInfo(  # pylint: disable=g-complex-comprehension
-            global_shape=global_shape,
-            global_slices=sorted(set(global_slices_array.flatten())),
-            shards=shard_per_slice)
-        for global_shape, global_slices_array, shard_per_slice in safe_zip(
-            global_avals, global_slices_arrays, shard_per_global_slices)
-    ]
-    filepath_map[prefix + '.index'] = {
+    index_content = {
         'shard_count': shard_count,
         'index': struct.unflatten(index_leaves),
     }
     if version is not Version.UNKNOWN:
-      filepath_map[prefix + '.index']['version'] = version.value
-  # Assign the LazyArrayChunks objects to the corresponding shard filepaths.
-  shard_fpath_fn = functools.partial(
-      vmoe.checkpoints.base.add_shard_suffix,
-      filepath=prefix + '.data',
-      shard_count=shard_count)
-  for shard, lazy_array_chunks in lazy_array_chunks_per_shard.items():
-    filepath_map[shard_fpath_fn(shard=shard)] = lazy_array_chunks
+      index_content['version'] = version.value
+    filepath_to_data[prefix + '.index'] = index_content
 
-  return filepath_map
+  return filepath_to_data
 
 
-def _make_slice_nd_arrays(
-    avals: Sequence[jax.ShapedArray],
-    parsed_partition_specs: Sequence[ParsedPartitionSpec],
-    mesh: Mesh) -> Sequence[SliceNdArray]:
-  """Returns a SliceNdArray indicating the array slice stored in each device."""
-  # We use pjit/pxla functions to obtain the slice of each aval which is
-  # contained in every devices of the mesh.
-  # This can be used to map local/global devices to local/global array axes.
-  make_sharding_spec_fn = pjit.pxla.mesh_sharding_specs(mesh.shape,
-                                                        mesh.axis_names)
-  sharding_specs_leaves = [
-      make_sharding_spec_fn(aval, pjit.get_array_mapping(spec))
-      for aval, spec in zip(avals, parsed_partition_specs)
-  ]
-  slices_arrays = [
-      spec.indices(aval.shape)
-      for aval, spec in zip(avals, sharding_specs_leaves)
-  ]
-  return [
-      _convert_native_to_slices_nd_array(x, aval)
-      for x, aval in zip(slices_arrays, avals)
-  ]
+def _create_map_slicend_to_array_shards(
+    arr,
+    max_chunk_bytes: Optional[int] = MAX_CHUNK_BYTES,
+) -> Dict[SliceNd, List[Shard]]:
+  """Returns a dict mapping SliceNd to the corresponding array shards.
 
-
-def _match_checkpoint_to_local_slices(
-    local_global_slices: Iterable[Tuple[SliceNd, SliceNd]],
-    ckpt_slices_and_shards: Iterable[Tuple[SliceNd, int]],
-) -> Iterator[Tuple[int, SliceNd, SliceNd, SliceNd]]:
-  """Matches slices in checkpoints to local slices.
-
-  When a checkpoint is written, a given array might be partitioned in a certain
-  way which differs from the target partitioning when the checkpoint is
-  restored (e.g. if a model is fine-tuned on a different hardware topology).
-
-  We must map the global slices that the local devices hold with the slices in
-  the checkpoint files. Notice that, because the partitioning is different, this
-  is not a 1-to-1 mapping. If a global slice intersects with a checkpoint slice,
-  then part of the array in the checkpoint needs to be restored to fill part of
-  the local array.
-
-  This function yields (shard, ckpt_slice, ckpt_subslice, local_subslice),
-  respectively denoting:
-    - The checkpoint shard to be restored.
-    - The (global) checkpoint slice that needs to be restored from the shard.
-    - The (sub)slice in the checkpoint chunk that needs to be copied to
-    - the (sub)slice in the local array.
+  The shards of an array are potentially split in smaller chunks so that every
+  chunk has at most max_chunk_bytes.
 
   Args:
-    local_global_slices: Iterable of (local slice, global slice).
-    ckpt_slices_and_shards: Iterable of (ckpt slice, shard).
-
-  Yields:
-    A sequence of tuples (int, SliceNd, SliceNd, SliceNd).
-  """
-  ckpt_slices_and_shards = list(ckpt_slices_and_shards)
-  for local_slice, global_slice in local_global_slices:
-    matched_in_ckpt = False
-    for ckpt_slice, ckpt_shard in ckpt_slices_and_shards:
-      intersection = _intersect_slice_nd(ckpt_slice, global_slice, local_slice)
-      if intersection is not None:
-        matched_in_ckpt = True
-        ckpt_subslice, local_subslice = intersection
-        yield ckpt_shard, ckpt_slice, ckpt_subslice, local_subslice
-    if not matched_in_ckpt:
-      raise ValueError(
-          f'The global slice {global_slice} does not intersect with any '
-          f'slice available in the checkpoint:\n'
-          f'{[s for s, _ in ckpt_slices_and_shards]}')
-
-
-def _pair_local_and_global_slices(
-    local_slices_arrays: Sequence[SliceNdArray],
-    global_slices_arrays: Sequence[SliceNdArray],
-    mesh: Mesh,
-    local_mesh: Optional[Mesh] = None,
-) -> Iterator[Sequence[Tuple[SliceNd, SliceNd]]]:
-  """Returns an iterator over sets of pairs (local SliceNd, global SliceNd).
-
-  Args:
-    local_slices_arrays: Sequence of SliceNdArray indicating how each input
-      array is partitioned across the local (for the current process) mesh of
-      devices.
-    global_slices_arrays: Sequence of SliceNdArray indicating how each input
-      array is partitioned across the global mesh of devices.
-    mesh: Global mesh of devices.
-    local_mesh: Local (restricted to a given process) mesh of devices.
+    arr: jax.Array.
+    max_chunk_bytes: Maximum size (in bytes) of the chunks.
 
   Returns:
-    Iterator over sequences of (global sliceNd, local sliceNd).
+    A dict mapping from a chunk Index to a list of JAX array Shards.
   """
-  local_mesh = local_mesh or mesh.local_mesh
-  global_devices = mesh.devices.flatten()
-  local_devices = local_mesh.devices.flatten()
-
-  def _fn(local_slices_array, global_slices_array):
-    local_slices_array = local_slices_array.flatten()
-    global_slices_array = global_slices_array.flatten()
-    # Map from global SliceNd to device ID.
-    device2global = dict(
-        safe_map(lambda s, d: (d.id, s), global_slices_array, global_devices))
-    # Create a set of pairs (local SliceNd, global SliceNd).
-    return set(safe_map(lambda s, d: (s, device2global[d.id]),
-                        local_slices_array, local_devices))
-
-  return safe_map(_fn, local_slices_arrays, global_slices_arrays)
-
-
-def _remove_unused_shards(
-    shard_per_slices: Sequence[Sequence[int]],
-    process_per_shard: Tuple[int, ...],
-) -> Tuple[Sequence[Sequence[int]], Tuple[int, ...]]:
-  """Removes unused shards from the inputs."""
-  old_to_new_shard_map = {}
-  process_per_shard_new = []
-  shard_per_slices_new = []
-  for shard_per_slice in shard_per_slices:
-    shard_per_slice_new = []
-    for shard_index in shard_per_slice:
-      if shard_index in old_to_new_shard_map:
-        new_shard_index = old_to_new_shard_map[shard_index]
-      else:
-        new_shard_index = len(old_to_new_shard_map)
-        old_to_new_shard_map[shard_index] = new_shard_index
-        process_per_shard_new.append(process_per_shard[shard_index])
-      shard_per_slice_new.append(new_shard_index)
-    shard_per_slices_new.append(shard_per_slice_new)
-  return shard_per_slices_new, tuple(process_per_shard_new)
+  slicend_to_shards = collections.defaultdict(list)
+  for shard in arr.global_shards:
+    slicend = _shard_index_to_slicend(shard.index, arr.shape)
+    slicend_to_shards[slicend].append(shard)
+  if max_chunk_bytes and max_chunk_bytes >= 1:
+    max_chunk_items = max(max_chunk_bytes // arr.dtype.itemsize, 1)
+  else:
+    max_chunk_items = None
+  # pylint: disable=g-complex-comprehension
+  slicend_to_shards = {
+      subslicend: shards for slicend, shards in slicend_to_shards.items()
+      for subslicend in _split_slicend(slicend, max_chunk_items)
+  }
+  # pylint: enable=g-complex-comprehension
+  return slicend_to_shards
 
 
-def _restore_array_chunks(
+def _create_map_slicend_to_checkpoint_shard(
+    slicend_to_shards: Dict[SliceNd, List[Shard]],
+    itemsize: int,
+    bytes_per_shard: List[int],
+) -> Dict[SliceNd, int]:
+  """Returns a mapping from SliceNd to the checkpoint shard storing them.
+
+  The checkpoint shard for each SliceNd is chosen so that all checkpoint shards
+  hold roughly the same number of bytes.
+
+  Args:
+    slicend_to_shards: Dict mapping from SliceNd to the corresponding list of
+      JAX array Shards.
+    itemsize: Size (in bytes) of each chunk element.
+    bytes_per_shard: List containing the number of bytes that each shard holds.
+      This list is updated according to the selected shard for each index.
+
+  Returns:
+    A dict mapping from Index to an integer, representing the id of the
+    checkpoint shard in which it will be stored.
+  """
+  num_shards = len(bytes_per_shard)
+  process_count = jax.process_count()
+  slicend_to_ckpt_shard = {}
+  for slicend, shards in slicend_to_shards.items():
+    # For each array chunk (slicend), find all the processes that hold it
+    # (there could be many if an array is replicated). The chunk will be written
+    # to the checkpoint shard will less assigned bytes of one of the processes
+    # that hold that chunk.
+    processes = [s.device.process_index for s in shards]
+    shards = [list(range(pid, num_shards, process_count)) for pid in processes]
+    shards = sum(shards, [])
+    ckpt_shard = sorted(shards, key=lambda s: (bytes_per_shard[s], s))[0]
+    slicend_to_ckpt_shard[slicend] = ckpt_shard
+    # Update the number of bytes written to the selected shard.
+    size = np.prod(tuple(s.stop - s.start for s in slicend)) * itemsize
+    bytes_per_shard[ckpt_shard] += size
+  return slicend_to_ckpt_shard
+
+
+def _find_ckpt_shards_to_restore(
+    sharding: Sharding,
+    global_shape: Tuple[int, ...],
+    ckpt_slices: Sequence[SliceNd],
+    ckpt_shards: Sequence[int],
+) -> Iterator[int]:
+  """Iterates over checkpoint shards to restore values of addressable array shards."""
+  for index in sharding.addressable_devices_indices_map(global_shape).values():
+    global_slice = _shard_index_to_slicend(index, global_shape)
+    for ckpt_slice, ckpt_shard in safe_zip(ckpt_slices, ckpt_shards):
+      if (global_slice == ckpt_slice or  # account for scalar with shape ().
+          _intersect_slicend(global_slice, ckpt_slice)):
+        yield ckpt_shard
+
+
+def _get_array_sharding_or_default(arr: jax.Array) -> Sharding:
+  if hasattr(arr, 'sharding'):
+    return arr.sharding
+  else:
+    op_sharding = jax.xla.xc.OpSharding()
+    op_sharding.type = jax.xla.xc.OpSharding.Type.REPLICATED
+    return OpShardingSharding(jax.devices(), op_sharding)
+
+
+def _intersect_slicend(a: SliceNd, b: SliceNd) -> Optional[SliceNd]:
+  output = []
+  for s_a, s_b in safe_zip(a, b):
+    start = max(s_a.start or 0, s_b.start or 0)
+    stop = min(np.inf if s_a.stop is None else s_a.stop,
+               np.inf if s_b.stop is None else s_b.stop)
+    if stop <= start:
+      return None
+    output.append(Slice(start, None if stop == np.inf else stop))
+  return SliceNd(output)
+
+
+def _make_dir_sync(workdir: str):
+  # Process 0 creates the workdir if it doesn't exist. All processes wait
+  # until it's done.
+  if jax.process_index() == 0:
+    base.gfile.makedirs(workdir)
+  multihost_utils.sync_devices(f'checkpoints:mkdir:{workdir}')
+
+
+def _make_index_info(
+    slicend_to_ckpt_shards: Dict[SliceNd, int],
+    array: jax.Array) -> IndexInfo:
+  global_shape = jax.ShapedArray(
+      shape=array.shape, dtype=array.dtype, weak_type=array.weak_type)
+  global_slices = sorted(slicend_to_ckpt_shards.keys())
+  shards = [slicend_to_ckpt_shards[slicend] for slicend in global_slices]
+  return IndexInfo(global_shape=global_shape,
+                   global_slices=global_slices,
+                   shards=shards)
+
+
+def _replace_jax_with_numpy_in_lazy_array_chunks(
+    ckpt_shard_to_lazy_array_chunks: Dict[int, LazyArrayChunks],
+):
+  id_to_array = {}
+  for lac in ckpt_shard_to_lazy_array_chunks.values():
+    for lst in lac.chunks.values():
+      for arr, _, _ in lst:
+        id_to_array[id(arr)] = arr
+  id_to_array = jax.tree_map(np.asarray, id_to_array)
+  for lac in ckpt_shard_to_lazy_array_chunks.values():
+    for i, lst in lac.chunks.items():
+      lac.chunks[i] = [
+          (id_to_array[id(arr)], ls, gs) for arr, ls, gs in lst
+      ]
+
+
+def _restore_checkpoint_from_index(
+    prefix: str,
+    shard_count: int,
+    index: PyTree,
+    sharding: PyTree,
+    thread_pool: Optional[ThreadPool] = None,
+    max_concurrent_bytes: Optional[int] = MAX_CONCURRENT_BYTES,
+) -> PyTree:
+  """Restores a PyTree of partitioned arrays from an index."""
+  thread_pool = thread_pool or ThreadPool()
+  # Flatten index and axis_resources. Check that the two are compatible.
+  index, struct = tree_flatten(index)
+  shardings, struct2 = tree_flatten(sharding)
+  if struct != struct2:
+    raise ValueError(f'The tree structs do not match.\n'
+                     f'index: {struct}\n'
+                     f'sharding: {struct2}')
+  # Create Numpy arrays to store the values of each of the addressable array
+  # shards addressable.
+  local_buffers = [
+      _create_local_buffers(s, i.global_shape.shape, i.global_shape.dtype)
+      for s, i in safe_zip(shardings, index)
+  ]
+  # Find which checkpoint shards must be read by the current process to restore
+  # values of the addressable array shards.
+  ckpt_shards_to_restore = [
+      _find_ckpt_shards_to_restore(s, i.global_shape.shape, i.global_slices,
+                                   i.shards)
+      for s, i in safe_zip(shardings, index)
+  ]
+  ckpt_shards_to_restore = frozenset().union(*ckpt_shards_to_restore)
+  ckpt_shards_to_restore = [
+      base.add_shard_suffix(prefix + '.data', i, shard_count)
+      for i in ckpt_shards_to_restore
+  ]
+  # If max_concurrent_bytes is specified, calculate the maximum number of files
+  # to read from concurrently. Otherwise, we just read from as many files as
+  # possible.
+  if max_concurrent_bytes:
+    total_bytes_to_restore = sum(
+        thread_pool.map(lambda fpath: base.gfile.stat(fpath).length,
+                        ckpt_shards_to_restore))
+    num_ckpt_shards_per_thread = round(
+        total_bytes_to_restore / max_concurrent_bytes)
+    num_ckpt_shards_per_thread = max(num_ckpt_shards_per_thread, 1)
+  else:
+    num_ckpt_shards_per_thread = None
+  # Restore the values of the local buffers (i.e. addressable shards), reading
+  # from the corresponding checkpoint shards.
+  thread_pool.map(
+      lambda fpath: _restore_local_buffers(fpath, local_buffers),
+      ckpt_shards_to_restore,
+      chunksize=num_ckpt_shards_per_thread)
+  # Create JAX Arrays from the Numpy buffers.
+  def _make_jax_array(i: int) -> jax.Array:
+    shape, sharding = index[i].global_shape.shape, shardings[i]
+    cb = lambda idx: local_buffers[i][_shard_index_to_slicend(idx, shape)]
+    array = jax.make_array_from_callback(shape, sharding, cb)
+    local_buffers[i] = None
+    return array
+  arrays = thread_pool.map(_make_jax_array, range(len(index)))
+  return struct.unflatten(arrays)
+
+
+def _restore_checkpoint_from_index_unknown(
+    prefix: str, shard_count: int, index: PyTree, tree: PyTree,
+    *args, **kwargs):
+  """Restores from an unknown (old) checkpoint version."""
+  if tree is None:
+    raise ValueError(
+        'You must specify the tree arguments when restoring from '
+        f'{Version.UNKNOWN}.')
+  sharding = tree_map(_get_array_sharding_or_default, tree)
+  # The index has the same structure as the input tree and the sharding.
+  # Obtain such structure before calling _restore_checkpoint.
+  index = from_state_dict(target=tree, state=index)
+  return _restore_checkpoint_from_index(
+      prefix, shard_count, index, sharding, *args, **kwargs)
+
+
+def _restore_checkpoint_from_index_v1(
+    prefix: str, shard_count: int, index: PyTree, tree: Optional[PyTree],
+    *args, **kwargs):
+  """Restores from a V1 checkpoint."""
+  if tree is not None:
+    sharding = tree_map(_get_array_sharding_or_default, tree)
+    sharding_state_dict = to_state_dict(sharding)
+  else:
+    sharding = tree_map(_get_array_sharding_or_default, index)
+    sharding_state_dict = sharding
+  state_dict = _restore_checkpoint_from_index(
+      prefix, shard_count, index, sharding_state_dict, *args, **kwargs)
+  return from_state_dict(target=sharding, state=state_dict)
+
+
+def _restore_local_buffers(
     filepath: str,
-    local_arrays: Sequence[np.ndarray],
-    array_slices_to_restore: Mapping[int, Iterable[Tuple[SliceNd, SliceNd,
-                                                         SliceNd]]],
+    local_buffers: Sequence[Dict[SliceNd, np.ndarray]],
 ):
   """Restores array chunks from a checkpoint file, filling local arrays.
 
   Args:
     filepath: Filepath of the file to restore from. This is typically the
       filepath of a checkpoint shard.
-    local_arrays: Sequence of Numpy arrays containing the local arrays.
-    array_slices_to_restore: Mapping from array indices to a sequence of
-      (ckpt_slice_nd, ckpt_subslice_nd, local_subslice_nd), where ckpt_slice_nd
-      is the checkpoint SliceNd to restore, and ckpt_subslice_nd is a SliceNd
-      representing a subslice in the checkpoint chunk to copy to the subslice
-      local_subslice_nd of the corresponding local array.
+    local_buffers: Sequence of dictionaries mapping from global slices
+      (identifying array shards) to Numpy arrays. Parts of the Numpy arrays are
+      filled with the values read from the corresponding checkpoint shard.
   """
-  array_chunks = vmoe.checkpoints.base.restore_checkpoint(
-      filepath, ArrayChunks())
-  for index, slices_to_restore in array_slices_to_restore.items():
-    slices_to_restore = {
-        k: list(v) for k, v in itertools.groupby(
-            sorted(slices_to_restore), key=lambda x: x[0])
-    }
-    for ckpt_chunk, ckpt_slice in array_chunks.iter_chunks(index):
-      for _, ckpt_chunk_slice, local_chunk_slice in slices_to_restore.get(
-          ckpt_slice, []):
-        local_chunk_slice = tuple(s.slice for s in local_chunk_slice)
-        ckpt_chunk_sliced = ckpt_chunk_slice.chunk(ckpt_chunk)
-        local_arrays[index][local_chunk_slice] = ckpt_chunk_sliced
+  ckpt_chunks = base.restore_checkpoint(filepath, ArrayChunks())
+  for i in ckpt_chunks.chunks:
+    for ckpt_chunk, ckpt_slice in zip(
+        ckpt_chunks.chunks[i], ckpt_chunks.global_slices[i]):
+      for global_slice, buffer in local_buffers[i].items():
+        intersect_slice = _intersect_slicend(global_slice, ckpt_slice)
+        if (global_slice == ckpt_slice or  # account for scalars with shape ().
+            intersect_slice):
+          local_intersect_slice = tuple(
+              slice(a.start - b.start, a.stop - b.start)
+              for a, b in safe_zip(intersect_slice, global_slice))
+          ckpt_intersect_slice = tuple(
+              slice(a.start - b.start, a.stop - b.start)
+              for a, b in safe_zip(intersect_slice, ckpt_slice))
+          buffer[local_intersect_slice] = ckpt_chunk[ckpt_intersect_slice]
 
 
-def _slice_nd_arrays_to_shards(
-    slice_nd_arrays: Sequence[SliceNdArray],
-    devices: np.ndarray,
-    num_shards: int) -> Tuple[Sequence[Sequence[int]], Tuple[int, ...]]:
-  """Returns the shards used to store each slice, for each SliceNdArray.
+def _shard_index_to_slicend(
+    index: Tuple[slice, ...], global_shape: Tuple[int, ...]) -> SliceNd:
+  return SliceNd([
+      Slice(s.start or 0, size if s.stop is None else s.stop)
+      for s, size in safe_zip(index, global_shape)])
 
-  Example:
-    Suppose that an array with shape (8, 4), is sliced on a (2, 2) mesh as
-    specified by the following SliceNdArray object:
-    [
-      [(Slice(0, 4), Slice()), (Slice(0, 4), Slice())],
-      [(Slice(4, 8), Slice()), (Slice(4, 8), Slice())],
+
+def _split_slicend(
+    slicend: SliceNd,
+    max_chunk_items: Optional[int] = None,
+) -> Sequence[SliceNd]:
+  """Splits an SliceNd into smaller chunks with at most max_chunk_items."""
+  shape = tuple(s.stop - s.start for s in slicend)
+  chunk_items = np.prod(shape)
+  chunks = [slicend]
+  max_chunk_items: int = max_chunk_items or -1
+  if max_chunk_items < 1 or chunk_items <= max_chunk_items:
+    return chunks
+  # Split each dimension into a suitable number of splits, in increasing order
+  # of dimension size, to minimize the number of chunks and ensure that the
+  # number of items in the chunks is <= max_chunk_items.
+  for i, size in sorted(enumerate(shape), key=lambda t: (t[1], t[0])):
+    if size == 1: continue
+    # pylint: disable=g-complex-comprehension
+    splits = [
+        # Note: we should try with all divisors of size here, but we simply try
+        # a few integers to simplify the code.
+        s for s in range(2, 10)
+        if size % s == 0 and chunk_items // s <= max_chunk_items
     ]
-    Notice that the first axis has two slices across the first mesh axis, and
-    the second axis is replicated.
+    splits = (splits or [size])[0]
+    start, stop, step = slicend[i].start, slicend[i].stop, size // splits
+    chunks = [chunk[:i] + (Slice(j, j + step),) + chunk[i + 1:]
+              for chunk in chunks for j in range(start, stop, step)]
+    chunk_items /= splits
+    if chunk_items <= max_chunk_items:
+      break
+    # pylint: enable=g-complex-comprehension
+  return [SliceNd(chunk) for chunk in chunks]
 
-    Suppose that each device is handled by a different process, and they are
-    arranged in the mesh as follows (each device represented by their ID):
-    [[0, 2],
-     [1, 3]]
 
-    Now, suppose that we want to checkpoint the array using 2 checkpoint shards.
-    Then, the output array will be [0, 1], indicating that the first slice
-    (i.e. (Slice(0, 4), Slice())) will be stored in the shard=0, and the second
-    slice (i.e. (Slice(4, 8), Slice())) will be saved in the next shard=1.
+def _update_lazy_array_chunks_with_leaf(
+    index: int,
+    slicend_to_arr_shards: Dict[SliceNd, List[Shard]],
+    slicend_to_ckpt_shard: Dict[SliceNd, int],
+    ckpt_shard_to_lazy_array_chunks: Dict[int, LazyArrayChunks],
+):
+  """Updates the LazyArrayChunks of checkpoint shards with the chunks of a leaf.
 
   Args:
-    slice_nd_arrays: A sequence of SliceNdArray.
-    devices: Numpy array representing the logical mesh of devices.
-    num_shards: (Tentative) number of checkpoint shards to use. The slices will
-      be roughly uniformly distributed among these. If `num_shards <= 0` then,
-      the minimum number of shards necessary is used.
-
-  Returns:
-    - A list of the same size as the input list (i.e. number of arrays),
-      where each element is a list of integers denoting which shard is used to
-      store the corresponding slice.
-    - A tuple containing the process_index that handles each shard.
+    index: Index of the leaf.
+    slicend_to_arr_shards: Mapping from a SliceNd to the list of corresponding
+      JAX array shards. The SliceNd represents a global (sub) slice of the array
+      in the leaf. At least 1 shard must be held by process_index.
+    slicend_to_ckpt_shard: Mapping from a SliceNd to the checkpoint shard that
+      will store it.
+    ckpt_shard_to_lazy_array_chunks: Dictionary mapping from a checkpoint shard
+      to a LazyArrayChunks object. This object will be updated.
   """
-  devices = devices.flatten()
-  # Each checkpoint shard is handled by a different process, we assign them in a
-  # round-robin fashion. We also keep track of the number of slices stored in
-  # each shard. A slice can only be stored in a shard if that slice is allocated
-  # in some device of the process handling the shard.
-  shards = [(s % jax.process_count(), 0) for s in range(num_shards)]
-  # This function is used to find the best shard to store an array slice,
-  # The viable shards are those that are handled by one of the processes given
-  # by `process_indices`. We select the viable shard with the smallest number of
-  # slices. If no viable shard is found, we simply create a new shard handled by
-  # one of the specified processes (that with the smallest ID).
-  def find_best_viable_shard_index(process_indices):
-    viable_shards = [
-        (c, s) for s, (p, c) in enumerate(shards) if p in process_indices
-    ]
-    if viable_shards:
-      # Take the viable shard with the least number of slices.
-      return sorted(viable_shards)[0][1]
-    else:
-      # Create a new shard is handled by one of the passed processes.
-      p = min(process_indices)
-      shards.append((p, 0))
-      return len(shards) - 1
+  # Maps a global (sub) SliceNd to a local one, to chunk data from the array
+  # shard. E.g. suppose an array shard with index (slice(5, 10), slice(3, 9)).
+  # We have the global slice (slice(6, 8), slice(3, 8)). Then this global slice
+  # corresponds to the local slice (slice(1, 3), slice(0, 5)).
+  def _global2local(shard: Shard, global_slice: SliceNd) -> SliceNd:
+    return SliceNd([
+        Slice(s.start - (i.start or 0), s.stop - (i.start or 0))
+        for i, s in safe_zip(shard.index, global_slice)
+    ])
 
-  shard_per_slices = []
-  for slice_nd_array in slice_nd_arrays:
-    slice_nd_array = slice_nd_array.flatten()
-    # Map each slice of the array to a list of processes that hold it.
-    # Note: an `array_slice` is a `SliceNd` object.
-    processes_per_slice = collections.defaultdict(list)
-    for slice_nd, device in safe_zip(slice_nd_array, devices):
-      processes_per_slice[slice_nd].append(device.process_index)
-    # Now, for each slice_nd, find the best shard to handle it.
-    shard_per_slice = []
-    for _, processes in sorted(processes_per_slice.items()):
-      s = find_best_viable_shard_index(set(processes))
-      shards[s] = (shards[s][0], shards[s][1] + 1)  # Update num_slices.
-      shard_per_slice.append(s)  # Assign i-th slice to the s-th shard.
-    # For each input array, we have a new integer array with as many elements
-    # as slices the array has, denoting which shard will store each slice.
-    shard_per_slices.append(shard_per_slice)
-
-  process_per_shard = tuple(p for (p, _) in shards)
-  return shard_per_slices, process_per_shard
+  for global_slice, ckpt_shard in slicend_to_ckpt_shard.items():
+    if ckpt_shard % jax.process_count() == jax.process_index():
+      found = False
+      for arr_shard in slicend_to_arr_shards[global_slice]:
+        if arr_shard.device.process_index == jax.process_index():
+          local_slice = _global2local(arr_shard, global_slice)
+          ckpt_shard_to_lazy_array_chunks[ckpt_shard].add(
+              index, arr_shard.data, local_slice, global_slice)
+          found = True
+          break
+      if not found:
+        raise ValueError(
+            f'No array shards for leaf with {index=} are held by '
+            f'{jax.process_index()=}. The problem was found while processing '
+            f'{global_slice=} in {ckpt_shard=}. This is a bug, it should '
+            'never happen.')

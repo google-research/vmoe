@@ -12,577 +12,529 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Tests for model checkpoints."""
+"""Tests for partitioned.py."""
+import io
+import os
 from unittest import mock
 
 from absl.testing import absltest
 from absl.testing import parameterized
 import chex
 import jax
-from jax._src.lib import xla_bridge
+from jax.experimental import pjit
 import jax.numpy as jnp
 import numpy as np
-from vmoe.checkpoints import base
 from vmoe.checkpoints import partitioned
-from vmoe.checkpoints import types
 
-ArrayChunks = types.ArrayChunks
-Device = jax.xla.Device
-Mesh = partitioned.Mesh
-PartitionSpec = partitioned.PartitionSpec
+Mesh = jax.sharding.Mesh
+NamedSharding = jax.sharding.NamedSharding
+PartitionSpec = jax.sharding.PartitionSpec
 Slice = partitioned.Slice
 SliceNd = partitioned.SliceNd
-SliceNdArray = partitioned.SliceNdArray
-Version = partitioned.Version
 
 
-class MakeSliceNdArrayTest(absltest.TestCase):
-  """Tests the function creating SliceNdArrays from a mesh and ShapedArrays."""
-
-  def test_make_slice_nd_arrays(self):
-    # (4, 2) mesh with 4 processes, each handling two devices.
-    devices = np.asarray([
-        [_make_device(process_index=0, id=0),
-         _make_device(process_index=2, id=4)],
-        [_make_device(process_index=0, id=1),
-         _make_device(process_index=2, id=5)],
-        [_make_device(process_index=1, id=2),
-         _make_device(process_index=3, id=6)],
-        [_make_device(process_index=1, id=3),
-         _make_device(process_index=3, id=7)],
-    ], dtype=object)
-    mesh = Mesh(devices, ('a', 'b'))
-    aval = jax.ShapedArray((16, 8, 3), dtype=jnp.float32)
-    partition_spec = partitioned.ParsedPartitionSpec.from_user_input(
-        PartitionSpec('a', 'b'), 'input')
-    slice_nd_arrays = partitioned._make_slice_nd_arrays(
-        [aval], [partition_spec], mesh)
-    expected_slice_nd_array = SliceNdArray.create([
-        SliceNd(Slice(0, 4), Slice(0, 4), Slice(0, 3)),
-        SliceNd(Slice(0, 4), Slice(4, 8), Slice(0, 3)),
-        SliceNd(Slice(4, 8), Slice(0, 4), Slice(0, 3)),
-        SliceNd(Slice(4, 8), Slice(4, 8), Slice(0, 3)),
-        SliceNd(Slice(8, 12), Slice(0, 4), Slice(0, 3)),
-        SliceNd(Slice(8, 12), Slice(4, 8), Slice(0, 3)),
-        SliceNd(Slice(12, 16), Slice(0, 4), Slice(0, 3)),
-        SliceNd(Slice(12, 16), Slice(4, 8), Slice(0, 3)),
-    ], shape=(4, 2))
-    self.assertLen(slice_nd_arrays, 1)
-    np.testing.assert_array_equal(slice_nd_arrays[0], expected_slice_nd_array)
-
-
-class MatchCheckpointToLocalSlices(absltest.TestCase):
-
-  def test_match_checkpoint_to_local_slices(self):
-    local_global_slices = [
-        (SliceNd(Slice(0, 4)), SliceNd(Slice(4, 8))),
-        (SliceNd(Slice(4, 8)), SliceNd(Slice(0, 4))),
-    ]
-    ckpt_slices_and_shards = [
-        (SliceNd(Slice(6, 12)), 1),
-        (SliceNd(Slice(0, 6)), 2),
-    ]
-    output = list(
-        partitioned._match_checkpoint_to_local_slices(local_global_slices,
-                                                      ckpt_slices_and_shards))
-    expected_output = [
-        (1, SliceNd(Slice(6, 12)), SliceNd(Slice(0, 2)), SliceNd(Slice(2, 4))),
-        (2, SliceNd(Slice(0, 6)), SliceNd(Slice(4, 6)), SliceNd(Slice(0, 2))),
-        (2, SliceNd(Slice(0, 6)), SliceNd(Slice(0, 4)), SliceNd(Slice(4, 8))),
-    ]
-    self.assertCountEqual(expected_output, output)
-
-  def test_match_checkpoint_to_local_slices_raises(self):
-    local_global_slices = [(SliceNd(Slice(0, 4)), SliceNd(Slice(4, 8)))]
-    ckpt_slices_and_shards = []
-    with self.assertRaises(ValueError):
-      _ = list(
-          partitioned._match_checkpoint_to_local_slices(local_global_slices,
-                                                        ckpt_slices_and_shards))
-
-
-class PairLocalAndGlobalSlicesTest(parameterized.TestCase):
-  """Tests the function pairing local SliceNds and global SliceNds.
-
-  A (local/global) SliceNdArray is an array of SliceNd objects denoting which
-  chunk of a particular array each device in the (local/global) mesh holds.
-  """
-
-  def _make_partitioned_across_process_data(self):  # pylint: disable=g-unreachable-test-method
-    # 2x2 mesh, with two processes handling two devices each.
-    # devices | processes
-    # [0, 1]  |  [0, 0]
-    # [2, 3]  |  [1, 1]
-    devices = [
-        _make_device(process_index=0, id=0),
-        _make_device(process_index=0, id=1),
-        _make_device(process_index=1, id=2),
-        _make_device(process_index=1, id=3),
-    ]
-    mesh = Mesh(np.asarray(devices).reshape(2, 2), ('a', 'b'))
-    # The global shape of the data is (8, ?), which is chunked in 2 partitions,
-    # each one is handled by a different process. The two devices of a given
-    # process store the same data, thus the local shape is (4, ?).
-    global_slices_array = SliceNdArray.create(
-        [SliceNd(Slice(0, 4), Slice()),
-         SliceNd(Slice(0, 4), Slice()),
-         SliceNd(Slice(4, 8), Slice()),
-         SliceNd(Slice(4, 8), Slice())],
-        shape=(2, 2))
-    local_slices_array = SliceNdArray.create(
-        [SliceNd(Slice(0, 4), Slice()),
-         SliceNd(Slice(0, 4), Slice())],
-        shape=(1, 2))
-    return mesh, local_slices_array, global_slices_array
-
-  def _make_partitioned_within_process_data(self):  # pylint: disable=g-unreachable-test-method
-    # 2x2 mesh, with two processes handling two devices each.
-    # devices | processes
-    # [0, 2]  |  [0, 1]
-    # [1, 3]  |  [0, 1]
-    devices = [
-        _make_device(process_index=0, id=0),
-        _make_device(process_index=1, id=2),
-        _make_device(process_index=0, id=1),
-        _make_device(process_index=1, id=3),
-    ]
-    mesh = Mesh(np.asarray(devices).reshape(2, 2), ('a', 'b'))
-    # The global shape of the data is (8, ?), which is chunked in 2 partitions,
-    # each one is handled by a different device within the same process.
-    # The two processes actually hold the same data. Thus, they have local shape
-    # of (8, ?).
-    global_slices_array = SliceNdArray.create(
-        [SliceNd(Slice(0, 4), Slice()),
-         SliceNd(Slice(0, 4), Slice()),
-         SliceNd(Slice(4, 8), Slice()),
-         SliceNd(Slice(4, 8), Slice())],
-        shape=(2, 2))
-    local_slices_array = SliceNdArray.create(
-        [SliceNd(Slice(0, 4), Slice()),
-         SliceNd(Slice(4, 8), Slice())],
-        shape=(2, 1))
-    return mesh, local_slices_array, global_slices_array
+class CreateLocalBuffersTest(parameterized.TestCase):
 
   @parameterized.named_parameters(
-      ('process_0_across_process', 0, '_make_partitioned_across_process_data',
-       {(SliceNd(Slice(0, 4), Slice()), SliceNd(Slice(0, 4), Slice()))}),
-      ('process_1_across_process', 1, '_make_partitioned_across_process_data',
-       {(SliceNd(Slice(0, 4), Slice()), SliceNd(Slice(4, 8), Slice()))}),
-      ('process_0_within_process', 0, '_make_partitioned_within_process_data',
-       {(SliceNd(Slice(0, 4), Slice()), SliceNd(Slice(0, 4), Slice())),
-        (SliceNd(Slice(4, 8), Slice()), SliceNd(Slice(4, 8), Slice()))}),
-      ('process_1_within_process', 1, '_make_partitioned_within_process_data',
-       {(SliceNd(Slice(0, 4), Slice()), SliceNd(Slice(0, 4), Slice())),
-        (SliceNd(Slice(4, 8), Slice()), SliceNd(Slice(4, 8), Slice()))}),
+      # Array is replicated in two devices of the current process. The output
+      # buffers contain a single SliceNd index, covering the full array.
+      ('_replicated', {0: (slice(None),), 1: (slice(None),)}, (10,),
+       jnp.float32, {SliceNd(Slice(0, 10)): np.zeros((10,), dtype=np.float32)}),
+      # The process contains two devices, each storing a shard of the original
+      # array. The shards are 0:2 and 6:8, thus those are the keys of the output
+      # dictionary.
+      ('_sharded', {0: (slice(0, 2),), 1: (slice(6, 8),)}, (2,), jnp.int32,
+       {SliceNd(Slice(0, 2)): np.zeros((2,), dtype=np.int32),
+        SliceNd(Slice(6, 8)): np.zeros((2,), dtype=np.int32)}),
   )
-  def test_pair_local_and_global_slices(self, process_index, make_data,
-                                        expected_pairs):
+  def test(self, indices_map, shard_shape, dtype, expected):
+    global_shape = (10,)
+    sharding = mock.create_autospec(partitioned.Sharding, instance=True)
+    sharding.addressable_devices_indices_map.return_value = indices_map
+    sharding.shard_shape.return_value = shard_shape
+    buffers = partitioned._create_local_buffers(sharding, global_shape, dtype)
+    chex.assert_trees_all_close(buffers, expected)
 
-    mesh, local_slices_array, global_slices_array = getattr(self, make_data)()
-    with mock.patch.object(
-        xla_bridge, 'process_index', return_value=process_index):
-      pairs = list(partitioned._pair_local_and_global_slices(
-          [local_slices_array], [global_slices_array], mesh, local_mesh=None))
-    self.assertLen(pairs, 1)
-    self.assertEqual(pairs[0], expected_pairs)
-
-
-class RemoveUnusedShardsTest(absltest.TestCase):
-  """Tests that shards that don't handle any slice are removed."""
-
-  def test_remove_unused_shards(self):
-    shards_per_slice = [[1, 3], [2]]
-    process_per_shard = [5, 4, 3, 2, 1]
-    output = partitioned._remove_unused_shards(shards_per_slice,
-                                               process_per_shard)
-    expected_shards_per_slice = [[0, 1], [2]]
-    expected_process_per_shard = (4, 2, 3)
-    self.assertEqual(output[0], expected_shards_per_slice)
-    self.assertTupleEqual(output[1], expected_process_per_shard)
+  def test_scalar(self):
+    sharding = mock.create_autospec(partitioned.Sharding, instance=True)
+    sharding.addressable_devices_indices_map.return_value = {0: (), 1: ()}
+    sharding.shard_shape.return_value = ()
+    buffers = partitioned._create_local_buffers(sharding, (), np.int32)
+    expected = {SliceNd(): np.zeros((), dtype=np.int32)}
+    chex.assert_trees_all_close(buffers, expected)
 
 
-class RestoreArrayChunks(parameterized.TestCase):
+class CreateMapSliceNdToArrayShardsTest(parameterized.TestCase):
 
-  def test_restore_array_chunks(self):
-    array_chunks = types.ArrayChunks(
-        chunks={
-            0: [1 * np.ones((5, 4)), 2 * np.ones((4, 5))],
-            1: [3 * np.ones((6,)), 4 * np.ones((3,))],
-            2: [np.arange(6).reshape((3, 2))],
-        },
-        global_slices={
-            0: [SliceNd(Slice(0, 5), Slice(4, 8)),
-                SliceNd(Slice(10, 14), Slice(0, 5))],
-            1: [SliceNd(Slice(0, 6)), SliceNd(Slice(6, 9))],
-            2: [SliceNd(Slice(7, 10), Slice(4, 6))],
-        })
-    array_slices_to_restore = {
-        1: [(SliceNd(Slice(0, 6)), SliceNd(Slice(1, 3)), SliceNd(Slice(0, 2))),
-            (SliceNd(Slice(6, 9)), SliceNd(Slice(0, 2)), SliceNd(Slice(3, 5)))],
-        2: [(SliceNd(Slice(7, 10), Slice(4, 6)),
-             SliceNd(Slice(0, 3), Slice(0, 1)),
-             SliceNd(Slice(0, 3), Slice(2, 3))),
-            (SliceNd(Slice(7, 10), Slice(4, 6)),
-             SliceNd(Slice(1, 3), Slice(0, 2)),
-             SliceNd(Slice(2, 4), Slice(0, 2)))],
+  @classmethod
+  def _make_shard(cls, index):
+    shard = mock.create_autospec(partitioned.Shard, instance=True)
+    shard.index = index
+    return shard
+
+  @parameterized.named_parameters(
+      ('_max_chunk_bytes_none', [(slice(None), slice(None))], None,
+       {SliceNd(Slice(0, 4), Slice(0, 10)): [0]}),
+  )
+  def test(self, global_shards_indexes, max_chunk_bytes, expected):
+
+    global_shards = [self._make_shard(index) for index in global_shards_indexes]
+    arr = mock.create_autospec(jax.Array, global_shards=global_shards,
+                               shape=(4, 10), dtype=jnp.float32.dtype)
+    output = partitioned._create_map_slicend_to_array_shards(
+        arr, max_chunk_bytes)
+    expected = {
+        key: [global_shards[i] for i in values]
+        for key, values in expected.items()
     }
-    local_arrays = [None, np.zeros((8,)), np.zeros((4, 4))]
-    with mock.patch.object(
-        base, 'restore_checkpoint', return_value=array_chunks):
-      partitioned._restore_array_chunks('foo', local_arrays,
-                                        array_slices_to_restore)
-    np.testing.assert_array_almost_equal(
-        local_arrays[1],
-        [3, 3, 0, 4, 4, 0, 0, 0])
-    np.testing.assert_array_almost_equal(
-        local_arrays[2],
-        [[0, 0, 0, 0],
-         [0, 0, 2, 0],
-         [2, 3, 4, 0],
-         [4, 5, 0, 0]])
+    self.assertDictEqual(output, expected)
 
-  @parameterized.parameters(
-      # Checkpoint has slice [0:5], process holds global slice [5:10] in a
-      # local slice [0:5] of an array.
-      # Checkpoint and global slices do not intersect.
-      (SliceNd(Slice(0, 5)), SliceNd(Slice(5, 10)), SliceNd(Slice(0, 5)), None),
-      # Checkpoint has slice [3:8], process holds global slice [3:8] in a
-      # local slice [0:5] of an array.
-      # Checkpoint chunk[0:5] must be copied to local array[0:5].
-      (SliceNd(Slice(3, 8)), SliceNd(Slice(3, 8)), SliceNd(Slice(0, 5)),
-       (SliceNd(Slice(0, 5)), SliceNd(Slice(0, 5)))),
-      # Checkpoint has slice [2:5, 0:4], process holds global slice [1:4, 1:3]
-      # in local slice [4:7, 4:6] of an array.
-      # Checkpoint chunk[0:2, 1:3] must be copied to local array[5:7, 4:6].
-      (SliceNd(Slice(2, 5), Slice(0, 4)), SliceNd(Slice(1, 4), Slice(1, 3)),
-       SliceNd(Slice(4, 7), Slice(4, 6)),
-       (SliceNd(Slice(0, 2), Slice(1, 3)),
-        SliceNd(Slice(5, 7), Slice(4, 6)))),
-  )
-  def test_intersect_slice_nd(self, ckpt_slice_nd, global_slice_nd,
-                              local_slice_nd, expected_output):
-    output = partitioned._intersect_slice_nd(ckpt_slice_nd, global_slice_nd,
-                                             local_slice_nd)
-    self.assertEqual(output, expected_output)
+  def test_scalar(self):
+    global_shards = [self._make_shard(())]
+    arr = mock.create_autospec(jax.Array, global_shards=global_shards,
+                               shape=(), dtype=jnp.float32.dtype)
+    output = partitioned._create_map_slicend_to_array_shards(arr)
+    expected = {SliceNd(): global_shards}
+    self.assertDictEqual(output, expected)
 
 
-class RestoreAndSaveCheckpointTest(parameterized.TestCase):
-  # Note: when restoring a checkpoint from an UNKNOWN version, we require now
-  # that either the tree or the axis_resources are given. This is because the
-  # order of the leaves in jax.tree_structure(foo) might different from that in
-  # jax.tree_structure(serialization.to_state_dict(foo)), which can cause an
-  # exception or loading the wrong values in the state dict.
-  # See comment in partitioned.save_checkpoint().
+class CreateMapSliceNdToCheckpointShardTest(absltest.TestCase):
 
-  @parameterized.named_parameters(
-      ('process_0_of_2_ver_v1', 0, None,
-       [[0, 0, 0, 0, 0, 1, 1, 1, 1, 1],
-        [0, 0, 0, 0, 0, 1, 1, 1, 1, 1],
-        [0, 0, 0, 0, 0, 1, 1, 1, 1, 1],
-        [0, 0, 0, 0, 0, 1, 1, 1, 1, 1],
-        [0, 0, 0, 0, 0, 1, 1, 1, 1, 1],
-        [2, 2, 2, 2, 2, 3, 3, 3, 3, 3],
-        [2, 2, 2, 2, 2, 3, 3, 3, 3, 3],
-        [2, 2, 2, 2, 2, 3, 3, 3, 3, 3],
-        [2, 2, 2, 2, 2, 3, 3, 3, 3, 3],
-        [2, 2, 2, 2, 2, 3, 3, 3, 3, 3]], Version.V1),
-      ('process_1_of_2_ver_v1', 1, None,
-       [[0, 0, 0, 0, 0, 1, 1, 1, 1, 1],
-        [0, 0, 0, 0, 0, 1, 1, 1, 1, 1],
-        [0, 0, 0, 0, 0, 1, 1, 1, 1, 1],
-        [0, 0, 0, 0, 0, 1, 1, 1, 1, 1],
-        [0, 0, 0, 0, 0, 1, 1, 1, 1, 1],
-        [2, 2, 2, 2, 2, 3, 3, 3, 3, 3],
-        [2, 2, 2, 2, 2, 3, 3, 3, 3, 3],
-        [2, 2, 2, 2, 2, 3, 3, 3, 3, 3],
-        [2, 2, 2, 2, 2, 3, 3, 3, 3, 3],
-        [2, 2, 2, 2, 2, 3, 3, 3, 3, 3]], Version.V1),
-      ('process_0_of_2_axis_resources_ver_v1',
-       0, {'x': PartitionSpec(), 'y': PartitionSpec(), 'z': PartitionSpec('a')},
-       [[0, 0, 0, 0, 0, 1, 1, 1, 1, 1],
-        [0, 0, 0, 0, 0, 1, 1, 1, 1, 1],
-        [0, 0, 0, 0, 0, 1, 1, 1, 1, 1],
-        [0, 0, 0, 0, 0, 1, 1, 1, 1, 1],
-        [0, 0, 0, 0, 0, 1, 1, 1, 1, 1]], Version.V1),
-      ('process_1_of_2_axis_resources_ver_unknown',
-       1, {'x': PartitionSpec(), 'y': PartitionSpec(), 'z': PartitionSpec('a')},
-       [[2, 2, 2, 2, 2, 3, 3, 3, 3, 3],
-        [2, 2, 2, 2, 2, 3, 3, 3, 3, 3],
-        [2, 2, 2, 2, 2, 3, 3, 3, 3, 3],
-        [2, 2, 2, 2, 2, 3, 3, 3, 3, 3],
-        [2, 2, 2, 2, 2, 3, 3, 3, 3, 3]], Version.UNKNOWN),
-  )
+  @classmethod
+  def _make_shard(cls, process_index):
+    device = mock.create_autospec(jax.xla.Device, instance=True)
+    device.process_index = process_index
+    shard = mock.create_autospec(partitioned.Shard, instance=True)
+    shard.device = device
+    return shard
+
   @mock.patch.object(partitioned.jax, 'process_count', return_value=2)
-  def test_restore_checkpoint(self, process_index, axis_resources, expected_z,
-                              version, _):
-    devices = np.asarray(
-        [_make_device(process_index=i // 2, id=i) for i in range(4)])
-    mesh = partitioned.Mesh(devices.reshape((2, 2)), ('a', 'b'))
-    prefix = self.create_tempfile().full_path
-    def side_effect(filepath, *unused_args, **unused_kwargs):
-      return {
-          prefix + '.index': self._get_expected_index(version),
-          prefix + '.data-00000-of-00004': self._get_expected_shard_content(0),
-          prefix + '.data-00001-of-00004': self._get_expected_shard_content(1),
-          prefix + '.data-00002-of-00004': self._get_expected_shard_content(2),
-          prefix + '.data-00003-of-00004': self._get_expected_shard_content(3),
-      }[filepath]
-    with mock.patch.object(partitioned.vmoe.checkpoints.base,
-                           'restore_checkpoint', side_effect=side_effect):
-      with mock.patch.object(jax, 'process_index', return_value=process_index):
-        with mock.patch.object(xla_bridge, 'process_index',
-                               return_value=process_index):
-          restored = partitioned.restore_checkpoint(
-              prefix=prefix,
-              tree=None,
-              axis_resources=axis_resources,
-              mesh=mesh)
-          np.testing.assert_array_almost_equal(
-              restored['x'], np.zeros((5, 5), dtype=np.float32))
-          np.testing.assert_array_almost_equal(
-              restored['y'], [[0, 0, 0, 0, 0],
-                              [0, 0, 0, 0, 0],
-                              [0, 0, 0, 0, 0],
-                              [0, 0, 0, 0, 0],
-                              [0, 0, 0, 0, 0],
-                              [2, 2, 2, 2, 2],
-                              [2, 2, 2, 2, 2],
-                              [2, 2, 2, 2, 2],
-                              [2, 2, 2, 2, 2],
-                              [2, 2, 2, 2, 2]])
-          np.testing.assert_array_almost_equal(restored['z'], expected_z)
+  def test_single_shard_per_process(self, _):
+    slicend_to_shards = {
+        SliceNd(Slice(0, 10),): [self._make_shard(0), self._make_shard(1)],
+        SliceNd(Slice(10, 15),): [self._make_shard(0), self._make_shard(1)],
+    }
+    bytes_per_shard = [1, 4]
+    slicend_to_ckpt_shard = partitioned._create_map_slicend_to_checkpoint_shard(
+        slicend_to_shards, 2, bytes_per_shard)
+    self.assertListEqual(bytes_per_shard, [21, 14])
+    self.assertDictEqual(slicend_to_ckpt_shard, {
+        SliceNd(Slice(0, 10),): 0,
+        SliceNd(Slice(10, 15),): 1,
+    })
 
-  def test_restore_checkpoint_no_tree_nor_axis_resources_unknown_ver(self):
-    devices = np.asarray([_make_device(process_index=0, id=0)])
-    mesh = partitioned.Mesh(devices, ('a',))
-    prefix = self.create_tempfile().full_path
-    index = self._get_expected_index(version=Version.UNKNOWN)
-    with mock.patch.object(partitioned.vmoe.checkpoints.base,
-                           'restore_checkpoint', return_value=index):
-      with self.assertRaisesRegex(
-          ValueError,
-          'You must specify the tree and/or axis_resources arguments when'):
-        partitioned.restore_checkpoint(
-            prefix=prefix, tree=None, axis_resources=None, mesh=mesh)
+  @mock.patch.object(partitioned.jax, 'process_count', return_value=1)
+  def test_multiple_shard_per_process(self, _):
+    slicend_to_shards = {
+        SliceNd(Slice(0, 10),): [self._make_shard(0)],
+        SliceNd(Slice(10, 15),): [self._make_shard(0)],
+        SliceNd(Slice(15, 20),): [self._make_shard(0)],
+        SliceNd(Slice(20, 30),): [self._make_shard(0)],
+    }
+    bytes_per_shard = [1, 2, 3]
+    slicend_to_ckpt_shard = partitioned._create_map_slicend_to_checkpoint_shard(
+        slicend_to_shards, 2, bytes_per_shard)
+    self.assertListEqual(bytes_per_shard, [21, 32, 13])
+    self.assertDictEqual(slicend_to_ckpt_shard, {
+        SliceNd(Slice(0, 10),): 0,
+        SliceNd(Slice(10, 15),): 1,
+        SliceNd(Slice(15, 20),): 2,
+        SliceNd(Slice(20, 30),): 1,
+    })
 
-  def test_restore_checkpoint_empty_mesh(self):
-    prefix = self.create_tempfile().full_path
-    with self.assertRaisesRegex(ValueError, 'You must pass a non-empty mesh'):
-      partitioned.restore_checkpoint(
-          prefix=prefix, tree=None, axis_resources=None)
+  @mock.patch.object(partitioned.jax, 'process_count', return_value=2)
+  def test_scalar(self, _):
+    slicend_to_shards = {SliceNd(): [self._make_shard(0), self._make_shard(1)]}
+    bytes_per_shard = [1, 4, 2, 3]
+    slicend_to_ckpt_shard = partitioned._create_map_slicend_to_checkpoint_shard(
+        slicend_to_shards, 2, bytes_per_shard)
+    self.assertListEqual(bytes_per_shard, [3, 4, 2, 3])
+    self.assertDictEqual(slicend_to_ckpt_shard, {SliceNd(): 0})
+
+
+class FindCkptShardsToRestoreTest(parameterized.TestCase):
 
   @parameterized.named_parameters(
-      ('process_0_ver_unk', 0, 2, 0, Version.UNKNOWN),
-      ('process_1_ver_unk', 1, 1, 2, Version.UNKNOWN),
-      ('process_2_ver_v1', 2, 1, 1, Version.V1),
-      ('process_3_ver_v1', 3, 1, 3, Version.V1),
+      # Process with two devices, but a replicated array with a single chunk in
+      # the checkpoint with ID equal to 3.
+      ('_replicated_array_single_chunk', {0: (slice(None),), 1: (slice(None),)},
+       (10,), [SliceNd(Slice(0, 10))], [3], {3}),
+      # Process with a single device, handling the shard with items [0:5]. The
+      # checkpoint contains 5 shards [0:2, 2:4, 4:6, 6:8, 8:10]. So, the process
+      # must restore values from 3 checkpoint shards: 1, 2, and 3.
+      ('_sharded_array_multiple_chunks', {0: (slice(0, 5),)}, (5,), [
+          SliceNd(Slice(0, 2)),
+          SliceNd(Slice(2, 4)),
+          SliceNd(Slice(4, 6)),
+          SliceNd(Slice(6, 8)),
+          SliceNd(Slice(8, 10)),
+      ], [1, 2, 3, 4, 5], {1, 2, 3}),
   )
-  @mock.patch.object(partitioned.jax, 'process_count', return_value=4)
-  @mock.patch.object(
-      partitioned.vmoe.multihost_utils, 'sync_devices', return_value=None)
-  def test_save_checkpoint(self, process_index, num_written_files, shard,
-                           version, unused_1, unused_2):
-    devices = np.asarray(
-        [_make_device(process_index=i, id=i) for i in range(4)]).reshape((2, 2))
-    mesh = partitioned.Mesh(devices, ('a', 'b'))
-    tree = {
-        # 'x' has global_shape = (5, 5), it's written by process 0 in shard 0.
-        'x': np.ones((5, 5), dtype=np.float32) * process_index,
-        # 'y' has global_shape = (10, 5), first half is written by process 0
-        # (shard 0), second half is written by process 2 (shard 1).
-        'y': np.ones((5, 5), dtype=np.float32) * process_index,
-        # 'z' has global_shape = (10, 10), first quarter is written by process 0
-        # (shard 0), second quarter is written by process 1 (shard 2),
-        # third quarter is written by process 2 (shard 1), fourth quarter is
-        # written by process 3 (shard 3).
-        'z': np.ones((5, 5), dtype=np.float32) * process_index,
-    }
-    axis_resources = {
-        'x': PartitionSpec(),
-        'y': PartitionSpec('a'),
-        'z': PartitionSpec('a', 'b'),
-    }
-    prefix = self.create_tempfile().full_path
-    # Note: we need to mock both jax.process_index AND
-    # jax._src.lib.process_index.
-    with mock.patch.object(jax, 'process_index', return_value=process_index):
-      with mock.patch.object(xla_bridge, 'process_index',
-                             return_value=process_index):
-        async_result = partitioned.save_checkpoint(
-            prefix=prefix, tree=tree, axis_resources=axis_resources, mesh=mesh,
-            version=version)
-    written_files = async_result.get()
-    # Check that the process writes the expected number of files.
-    self.assertLen(written_files, num_written_files)
-    # If the process writes the index, load the index and check its icontent.
-    if num_written_files == 2:
-      index_content = base.restore_checkpoint(prefix + '.index')
-      expected_index_content = self._get_expected_index(version)
-      chex.assert_trees_all_equal_comparator(
-          lambda x, y: x == y,
-          lambda x, y: f'IndexInfos do not match:\n{x}\n{y}',
-          index_content, expected_index_content)
-      # Check that the process has written the expected sharded file.
-      expected_ckpt_shard = prefix + f'.data-{shard:05d}-of-00004'
-      self.assertIn(expected_ckpt_shard, written_files)
-      array_chunks = base.restore_checkpoint(expected_ckpt_shard)
-      expected_array_chunks = self._get_expected_shard_content(shard)
-      chex.assert_trees_all_equal_comparator(
-          self._compare_array_chunks,
-          lambda x, y: f'ArrayChunks do not match:\n{x}\n{y}',
-          array_chunks, expected_array_chunks,
-      )
+  def test(self, indices_map, shard_shape, ckpt_slices, ckpt_shards, expected):
+    global_shape = (10,)
+    sharding = mock.create_autospec(partitioned.Sharding, instance=True)
+    sharding.addressable_devices_indices_map.return_value = indices_map
+    sharding.shard_shape.return_value = shard_shape
+    ckpt_shards = partitioned._find_ckpt_shards_to_restore(
+        sharding, global_shape, ckpt_slices, ckpt_shards)
+    self.assertSetEqual(set(ckpt_shards), expected)
 
-  def test_save_checkpoint_empty_mesh(self):
-    prefix = self.create_tempfile().full_path
-    with self.assertRaisesRegex(ValueError, 'You must pass a non-empty mesh'):
-      partitioned.save_checkpoint(prefix=prefix, tree=mock.MagicMock(),
-                                  axis_resources=mock.MagicMock())
+  def test_scalar(self):
+    # Process with two devices, and a replicated scalar, stored in a single
+    # checkpoint shard (with id equal to 1).
+    sharding = mock.create_autospec(partitioned.Sharding, instance=True)
+    sharding.addressable_devices_indices_map.return_value = {0: (), 1: ()}
+    sharding.shard_shape.return_value = ()
+    ckpt_shards = partitioned._find_ckpt_shards_to_restore(
+        sharding, global_shape=(), ckpt_slices=[SliceNd()], ckpt_shards=[1])
+    self.assertSetEqual(set(ckpt_shards), {1})
 
-  def _compare_array_chunks(self, a, b):
-    """Compares two ArrayChunks objects."""
-    if a.global_slices != b.global_slices:
-      return False
-    a, sa = jax.tree_flatten(dict(a.chunks))
-    b, sb = jax.tree_flatten(dict(b.chunks))
-    if sa != sb:
-      return False
-    return all(map(lambda x, y: (x == y).all, a, b))
 
-  def _get_expected_index(self, version: Version):
+class RestoreCheckpointTest(absltest.TestCase):
+
+  def _index(self, version):
     index = {
-        'shard_count': 4,
+        'shard_count': 1,
         'index': {
             'x': partitioned.IndexInfo(
-                global_shape=jax.ShapedArray((5, 5), dtype=jnp.float32),
-                global_slices=((Slice(0, 5), Slice(0, 5)),),
-                shards=(0,)),
+                global_shape=jax.ShapedArray(shape=(5,), dtype=jnp.float32),
+                global_slices=[SliceNd(Slice(0, 5))],
+                shards=[0]),
             'y': partitioned.IndexInfo(
-                global_shape=jax.ShapedArray((10, 5), dtype=jnp.float32),
-                global_slices=((Slice(0, 5), Slice(0, 5)),
-                               (Slice(5, 10), Slice(0, 5))),
-                shards=(0, 1)),
-            'z': partitioned.IndexInfo(
-                global_shape=jax.ShapedArray((10, 10), dtype=jnp.float32),
-                global_slices=((Slice(0, 5), Slice(0, 5)),
-                               (Slice(0, 5), Slice(5, 10)),
-                               (Slice(5, 10), Slice(0, 5)),
-                               (Slice(5, 10), Slice(5, 10))),
-                shards=(0, 2, 1, 3)),
-        },
+                global_shape=jax.ShapedArray(shape=(), dtype=jnp.int32),
+                global_slices=[SliceNd()],
+                shards=[0]),
+        }
     }
-    if version != Version.UNKNOWN:
+    if version is not None:
       index['version'] = version.value
     return index
 
-  def _get_expected_shard_content(self, shard):
-    """Returns the ArrayChunks data stored in each shard."""
-    return {
-        # shard 0 is written by process 0.
-        0: ArrayChunks(
-            chunks={
-                0: [np.zeros((5, 5), dtype=np.float32)],  # x[:, :]
-                1: [np.zeros((5, 5), dtype=np.float32)],  # y[0:5, :]
-                2: [np.zeros((5, 5), dtype=np.float32)],  # z[0:5, 0:5]
-            },
-            global_slices={
-                0: [(Slice(0, 5), Slice(0, 5))],
-                1: [(Slice(0, 5), Slice(0, 5))],
-                2: [(Slice(0, 5), Slice(0, 5))],
+  def _write_checkpoint(self, prefix, version):
+    # Write index.
+    partitioned.base.save_checkpoint(prefix + '.index', self._index(version))
+    # Write data.
+    x = np.arange(5, dtype=np.float32)
+    y = np.ones((), dtype=np.int32)
+    s_x = SliceNd(Slice(0, 5))
+    s_y = SliceNd()
+    data = partitioned.LazyArrayChunks(chunks={
+        0: [(x, s_x, s_x)],
+        1: [(y, s_y, s_y)],
+    })
+    partitioned.base.save_checkpoint(prefix + '.data-00000-of-00001', data)
 
-            }),
-        # shard 1 is written by process 2.
-        1: ArrayChunks(
-            chunks={
-                1: [2 * np.ones((5, 5), dtype=np.float32)],  # y[5:10, :]
-                2: [2 * np.ones((5, 5), dtype=np.float32)],  # z[5:10, 0:5]
-            },
-            global_slices={
-                1: [(Slice(5, 10), Slice(0, 5))],
-                2: [(Slice(5, 10), Slice(0, 5))],
-            }),
-        # shard 2 is written by process 1.
-        2: ArrayChunks(
-            chunks={
-                2: [np.ones((5, 5), dtype=np.float32)],  # z[0:5, 5:10]
-            },
-            global_slices={
-                2: [(Slice(0, 5), Slice(5, 10))],
-            }),
-        # shard 2 is written by process 3.
-        3: ArrayChunks(
-            chunks={
-                2: [3 * np.ones((5, 5), dtype=np.float32)],  # z[5:10, 5:10]
-            },
-            global_slices={
-                2: [(Slice(5, 10), Slice(5, 10))],
-            }),
-    }[shard]
+  def test_unknown(self):
+    prefix = self.create_tempfile().full_path
+    self._write_checkpoint(prefix, partitioned.Version.UNKNOWN)
+    restored = partitioned.restore_checkpoint(
+        prefix, {
+            'x': np.zeros((5,), dtype=np.float32),
+            'y': np.zeros((), dtype=np.int32),
+        },
+        max_concurrent_bytes=None)
+    chex.assert_trees_all_close(restored, {
+        'x': np.arange(5, dtype=np.float32),
+        'y': np.ones((), dtype=np.int32),
+    })
+
+  def test_unknown_no_tree_no_sharding_fails(self):
+    # This fails: with the UNKNOWN version checkpoints we must specify either
+    # tree or sharding (or both).
+    prefix = self.create_tempfile().full_path
+    self._write_checkpoint(prefix, partitioned.Version.UNKNOWN)
+    with self.assertRaises(ValueError):
+      partitioned.restore_checkpoint(prefix, tree=None)
+
+  def test_v1(self):
+    prefix = self.create_tempfile().full_path
+    self._write_checkpoint(prefix, partitioned.Version.V1)
+    restored = partitioned.restore_checkpoint(
+        prefix, {
+            'x': np.zeros((5,), dtype=np.float32),
+            'y': np.zeros((), dtype=np.int32),
+        })
+    chex.assert_trees_all_close(restored, {
+        'x': np.arange(5, dtype=np.float32),
+        'y': np.ones((), dtype=np.int32),
+    })
+
+  def test_v1_no_tree_no_sharding_works(self):
+    # This works fine. With the V1 version, when no tree or sharding is given,
+    # the state dict is returned and the data is fully replicated.
+    prefix = self.create_tempfile().full_path
+    self._write_checkpoint(prefix, partitioned.Version.V1)
+    restored = partitioned.restore_checkpoint(prefix, tree=None)
+    chex.assert_trees_all_close(restored, {
+        'x': np.arange(5, dtype=np.float32),
+        'y': np.ones((), dtype=np.int32),
+    })
+
+  def test_v1_struct_does_not_match(self):
+    # This fails since the structure of the given tree does not match with that
+    # of the index.
+    prefix = self.create_tempfile().full_path
+    self._write_checkpoint(prefix, partitioned.Version.V1)
+    with self.assertRaises(ValueError):
+      partitioned.restore_checkpoint(prefix, {'y': np.zeros((1,))})
 
 
-class SliceNdArraysToShardsTest(absltest.TestCase):
+class RestoreLocalBuffersTest(absltest.TestCase):
+  # This tests a process restoring parts of the local buffers of 4 arrays from
+  # a single checkpoint shard file.
+  # The process holds different shards for each of the arrays. For the first
+  # array, it holds [4:8, 0:2]; for the second it holds shards [0:2] and [2:4];
+  # for the third one it holds the shard [2:6]; the fourth array is a scalar.
+  # The checkpoint shard stores none of the chunks of the first array, and it
+  # stores the chunks [1:3] for the second array (value=1), the chunks [2:4]
+  # and [4:8] of the third array (values=2 and 3 respectively), and the scalar.
 
-  def _create_test_data(self):
-    # PyTree used in several tests.
-    return [
-        # Array 'x' has two axis, none of which is partitioned.
-        SliceNdArray.create([SliceNd(Slice(), Slice())] * 6, shape=(3, 2)),
-        # Array 'y' is also not partitioned, but only has one axis.
-        SliceNdArray.create([SliceNd(Slice(),)] * 6, shape=(3, 2)),
-        # Array 'z' is partitioned on its second axis, across the second logical
-        # axis in two chunks.
-        SliceNdArray.create(
-            [
-                SliceNd(Slice(None), Slice(0, 3)),  # Processes {0, 1, 2}.
-                SliceNd(Slice(None), Slice(3, 6)),  # Processes {3, 4, 5}.
-            ],
-            shape=(1, 2),
-            tile=(3, 1)),
+  @classmethod
+  def _create_array_chunks(cls):
+    return partitioned.ArrayChunks(
+        chunks={1: [np.ones((2,), dtype=np.int32)],
+                2: [np.full((2,), 2, dtype=np.int64),
+                    np.full((4,), 3, dtype=np.float32)],
+                3: [9 * np.ones((), dtype=np.float64)]},
+        global_slices={1: [SliceNd(Slice(1, 3))],
+                       2: [SliceNd(Slice(2, 4)), SliceNd(Slice(4, 8))],
+                       3: [SliceNd()]})
+
+  @mock.patch.object(partitioned.base, 'restore_checkpoint')
+  def test(self, mock_restore_checkpoint):
+    mock_restore_checkpoint.return_value = self._create_array_chunks()
+    local_buffers = [
+        {SliceNd(Slice(4, 8), Slice(0, 2)): np.zeros((4, 2), dtype=np.float32)},
+        {
+            SliceNd(Slice(0, 2)): np.zeros((2,), dtype=np.int32),
+            SliceNd(Slice(2, 4)): np.zeros((2,), dtype=np.int32),
+        },
+        {SliceNd(Slice(2, 6)): np.zeros((4,), dtype=np.float32)},
+        {SliceNd(): np.zeros((), dtype=np.float64)},
     ]
-
-  @mock.patch.object(partitioned.jax, 'process_count', return_value=6)
-  def test_slice_nd_arrays_to_shards(self, _):
-    # Assume there's only one device per process to simplify calculations.
-    devices = np.asarray([
-        [_make_device(process_index=0), _make_device(process_index=3)],
-        [_make_device(process_index=1), _make_device(process_index=4)],
-        [_make_device(process_index=2), _make_device(process_index=5)],
-    ])
-    output = partitioned._slice_nd_arrays_to_shards(
-        self._create_test_data(), devices, num_shards=6)
-    expected_shards_per_slice = [[0], [1], [2, 3]]
-    self.assertEqual(output[0], expected_shards_per_slice)
-    self.assertTupleEqual(output[1], (0, 1, 2, 3, 4, 5))
-
-  @mock.patch.object(partitioned.jax, 'process_count', return_value=6)
-  def test_slice_nd_arrays_to_shards_minimum(self, _):
-    # Assume there's only one device per process to simplify calculations.
-    # Notice that the process_indices are not contiguous. This affects the slice
-    # that each process handles (for additional info, check the 'z' array in
-    # _create_slice_axes_array_to_shards_test_data).
-    devices = np.asarray([
-        [_make_device(process_index=0), _make_device(process_index=3)],
-        [_make_device(process_index=1), _make_device(process_index=4)],
-        [_make_device(process_index=2), _make_device(process_index=5)],
-    ])
-    devices = devices.reshape(3, 2)
-    output = partitioned._slice_nd_arrays_to_shards(
-        self._create_test_data(), devices, num_shards=0)
-    expected_shards_per_slice = [
-        [0],     # Process 0.
-        [0],     # Process 0.
-        [0, 1],  # Process {0, 3}.
+    partitioned._restore_local_buffers('/foo/bar', local_buffers)
+    expected_local_buffers = [
+        {SliceNd(Slice(4, 8), Slice(0, 2)): np.zeros((4, 2), dtype=np.float32)},
+        {
+            SliceNd(Slice(0, 2)): np.asarray([0, 1], dtype=np.int32),
+            SliceNd(Slice(2, 4)): np.asarray([1, 0], dtype=np.int32),
+        },
+        {SliceNd(Slice(2, 6)): np.asarray([2, 2, 3, 3], dtype=np.float32)},
+        {SliceNd(): np.asarray(9, dtype=np.float64)},
     ]
-    self.assertEqual(output[0], expected_shards_per_slice)
-    self.assertTupleEqual(output[1], (0, 3))
+    chex.assert_trees_all_close(local_buffers, expected_local_buffers)
 
 
-def _make_device(**kwargs):
-  """Returns a new mocked device."""
-  device = mock.MagicMock(Device)
-  for key, value in kwargs.items():
-    setattr(device, key, value)
-  return device
+class SaveCheckpointTest(parameterized.TestCase):
+
+  @classmethod
+  def _create_tree(cls, axis_resources):
+
+    def fn():
+      d = jax.device_count()
+      return {
+          'x': jnp.arange(5 * d * 10).reshape((5, d, 10)),
+          'y': jnp.arange(4),
+          'z': jnp.asarray(9, dtype=jnp.int32),
+      }
+
+    with Mesh(np.asarray(jax.devices()), 'd'):
+      return pjit.pjit(
+          fn, in_axis_resources=(), out_axis_resources=axis_resources)()
+
+  @classmethod
+  def _read_index(cls, filepath):
+    with io.open(filepath, 'rb') as fp:
+      return partitioned.serialization.msgpack_restore(fp.read())
+
+  def test_no_data_sharding_one_checkpoint_shard(self):
+    prefix = self.create_tempfile().full_path
+    tree = self._create_tree(axis_resources={
+        'x': PartitionSpec(),
+        'y': PartitionSpec(),
+        'z': PartitionSpec(),
+    })
+    async_result = partitioned.save_checkpoint(prefix, tree, num_shards=1)
+    created_files = async_result.get()
+    expected_files = [prefix + '.index', prefix + '.data-00000-of-00001']
+    self.assertSetEqual(set(created_files), set(expected_files))
+    for fpath in created_files:
+      self.assertTrue(os.path.exists(fpath))
+    index = self._read_index(prefix + '.index')
+    self.assertEqual(index['shard_count'], 1)
+    self.assertLen(index['index']['x'].shards, 1)
+    self.assertLen(index['index']['y'].shards, 1)
+    self.assertLen(index['index']['z'].shards, 1)
+
+  def test_data_sharding_two_checkpoint_shards(self):
+    prefix = self.create_tempfile().full_path
+    tree = self._create_tree(axis_resources={
+        'x': PartitionSpec(None, 'd', None),
+        'y': PartitionSpec(),
+        'z': PartitionSpec(),
+    })
+    async_result = partitioned.save_checkpoint(prefix, tree, num_shards=2)
+    created_files = async_result.get()
+    expected_files = [
+        prefix + '.index',
+        prefix + '.data-00000-of-00002', prefix + '.data-00001-of-00002']
+    self.assertSetEqual(set(created_files), set(expected_files))
+    for fpath in created_files:
+      self.assertTrue(os.path.exists(fpath))
+    index = self._read_index(prefix + '.index')
+    self.assertEqual(index['shard_count'], 2)
+    self.assertLen(index['index']['x'].shards, jax.device_count())
+    self.assertLen(index['index']['y'].shards, 1)
+    self.assertLen(index['index']['z'].shards, 1)
+
+  def test_no_jax_array_leave_raises(self):
+    prefix = self.create_tempfile().full_path
+    with self.assertRaises(ValueError):
+      _ = partitioned.save_checkpoint(prefix, {'x': np.asarray((5,))}).get()
+
+
+class SaveAndRestoreTest(absltest.TestCase):
+  """Tests save_checkpoint and restore_checkpoint functions end-to-end."""
+
+  @classmethod
+  def _create_tree(cls, axis_resources, dtype=jnp.float32):
+
+    def fn():
+      d = jax.device_count()
+      x = jnp.arange(5 * 2 * d * 10, dtype=dtype).reshape((5, 2 * d, 10))
+      y = jnp.asarray(9, dtype=jnp.int32)
+      return {'x': x, 'y': y}
+
+    with Mesh(np.asarray(jax.devices()), 'd'):
+      return pjit.pjit(
+          fn, in_axis_resources=(), out_axis_resources={
+              'x': axis_resources, 'y': PartitionSpec()})()
+
+  @classmethod
+  def _create_sharding(cls, axis_resources):
+    spec = NamedSharding(
+        mesh=Mesh(np.asarray(jax.devices()), 'd'), spec=axis_resources)
+    return {'x': spec, 'y': PartitionSpec()}
+
+  def test_both_replicated(self):
+    prefix = self.create_tempfile().full_path
+    tree = self._create_tree(PartitionSpec())
+    _ = partitioned.save_checkpoint(
+        prefix, tree, num_shards=5, max_chunk_bytes=10).get()
+    restored_tree = partitioned.restore_checkpoint(prefix, None)
+    chex.assert_trees_all_close(restored_tree, tree)
+
+  def test_save_replicated_restore_sharded(self):
+    prefix = self.create_tempfile().full_path
+    tree = self._create_tree(PartitionSpec())
+    _ = partitioned.save_checkpoint(prefix, tree).get()
+    restored_tree = partitioned.restore_checkpoint(prefix, None)
+    expected_tree = self._create_tree(PartitionSpec(None, 'd', None))
+    chex.assert_trees_all_close(restored_tree, expected_tree)
+
+  def test_save_sharded_restore_replicated(self):
+    prefix = self.create_tempfile().full_path
+    tree = self._create_tree(PartitionSpec(None, 'd', None))
+    _ = partitioned.save_checkpoint(prefix, tree).get()
+    restored_tree = partitioned.restore_checkpoint(prefix, None)
+    expected_tree = self._create_tree(PartitionSpec())
+    chex.assert_trees_all_close(restored_tree, expected_tree)
+
+  def test_save_and_restore_bfloat16(self):
+    prefix = self.create_tempfile().full_path
+    tree = self._create_tree(PartitionSpec(), dtype=jnp.bfloat16)
+    _ = partitioned.save_checkpoint(prefix, tree).get()
+    restored_tree = partitioned.restore_checkpoint(prefix, None)
+    chex.assert_trees_all_equal_dtypes(restored_tree, tree)
+    chex.assert_trees_all_close(restored_tree, tree)
+
+  def test_save_and_restore_structure(self):
+    prefix = self.create_tempfile().full_path
+    tree = self._create_tree(PartitionSpec(), dtype=jnp.bfloat16)
+    _ = partitioned.save_checkpoint(prefix, tree).get()
+    with Mesh(np.asarray(jax.devices()), 'd'):
+      tree_zeros = pjit.pjit(
+          fun=lambda tree: jax.tree_util.tree_map(jnp.zeros_like, tree),
+          out_axis_resources=PartitionSpec())(tree)
+    restored_tree = partitioned.restore_checkpoint(prefix, tree_zeros)
+    chex.assert_trees_all_close(restored_tree, tree)
+
+
+class SplitSliceNdTest(parameterized.TestCase):
+
+  @parameterized.named_parameters(
+      ('_scalar', (), None, [()]),
+      ('_primes', ((0, 5),), 3, [((0, 1),), ((1, 2),), ((2, 3),), ((3, 4),),
+                                 ((4, 5),)]),
+      ('_max_chunk_items_none', ((0, 2), (4, 8)), None, [((0, 2), (4, 8))]),
+      ('_max_chunk_items_4', ((0, 2), (4, 8)), 4, [((0, 1), (4, 8)),
+                                                   ((1, 2), (4, 8))]),
+      ('_max_chunk_items_2', ((0, 2), (4, 8)), 2, [((0, 1), (4, 6)),
+                                                   ((0, 1), (6, 8)),
+                                                   ((1, 2), (4, 6)),
+                                                   ((1, 2), (6, 8))]),
+      ('_max_chunk_items_1', ((0, 2), (4, 8)), 1, [((0, 1), (4, 5)),
+                                                   ((0, 1), (5, 6)),
+                                                   ((0, 1), (6, 7)),
+                                                   ((0, 1), (7, 8)),
+                                                   ((1, 2), (4, 5)),
+                                                   ((1, 2), (5, 6)),
+                                                   ((1, 2), (6, 7)),
+                                                   ((1, 2), (7, 8))]),
+  )
+  def test(self, slicend, max_chunk_items, expected):
+    tup2slice = lambda tup: Slice(*tup)
+    slicend = SliceNd(*map(tup2slice, slicend))
+    expected = [SliceNd(*map(tup2slice, s))  for s in expected]
+    output = partitioned._split_slicend(slicend, max_chunk_items)
+    self.assertSetEqual(set(output), set(expected))
+
+
+class UpdateLazyArrayChunksWithLeafTest(absltest.TestCase):
+
+  @classmethod
+  def _make_shard(cls, process_index, index):
+    device = mock.create_autospec(jax.xla.Device, instance=True)
+    device.process_index = process_index
+    shard = mock.create_autospec(partitioned.Shard, instance=True)
+    shard.device = device
+    shard.index = index
+    shard.data = None  # The value is not used, but shard.data is accessed.
+    return shard
+
+  def test_good(self):
+    ckpt_shard_to_lazy_array_chunks = {
+        0: mock.create_autospec(partitioned.LazyArrayChunks, instance=True),
+        1: mock.create_autospec(partitioned.LazyArrayChunks, instance=True),
+    }
+    slicend_to_ckpt_shard = {
+        SliceNd(Slice(10, 20),): 0,
+        SliceNd(Slice(20, 30),): 1,
+    }
+    slicend_to_arr_shards = {
+        SliceNd(Slice(10, 20),): [self._make_shard(0, (slice(10, 30),))],
+        SliceNd(Slice(20, 30),): [self._make_shard(0, (slice(10, 30),))],
+    }
+    partitioned._update_lazy_array_chunks_with_leaf(
+        3, slicend_to_arr_shards, slicend_to_ckpt_shard,
+        ckpt_shard_to_lazy_array_chunks)
+    ckpt_shard_to_lazy_array_chunks[0].add.assert_called_once_with(
+        3, None, SliceNd(Slice(0, 10)), SliceNd(Slice(10, 20)))
+    ckpt_shard_to_lazy_array_chunks[1].add.assert_called_once_with(
+        3, None, SliceNd(Slice(10, 20)), SliceNd(Slice(20, 30)))
+
+  def test_raises(self):
+    ckpt_shard_to_lazy_array_chunks = {
+        0: mock.create_autospec(partitioned.LazyArrayChunks, instance=True),
+    }
+    slicend_to_ckpt_shard = {SliceNd(Slice(10, 20),): 0}
+    slicend_to_arr_shards = {
+        SliceNd(Slice(10, 20),): [self._make_shard(1, (slice(10, 20),))],
+    }
+    with self.assertRaises(ValueError):
+      partitioned._update_lazy_array_chunks_with_leaf(
+          3, slicend_to_arr_shards, slicend_to_ckpt_shard,
+          ckpt_shard_to_lazy_array_chunks)
 
 
 if __name__ == '__main__':

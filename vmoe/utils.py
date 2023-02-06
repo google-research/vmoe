@@ -15,7 +15,6 @@
 """Module with several util functions."""
 import ast
 import collections.abc
-import functools
 import importlib
 import re
 from typing import Any, Callable, Dict, Iterator, Optional, Sequence, Tuple, Type, Union
@@ -25,18 +24,11 @@ import jax.numpy as jnp
 PRNGKey = jax.random.KeyArray
 
 
-@functools.lru_cache()
-def make_rngs(rng_keys: Tuple[str, ...], seed: int = 0) -> Dict[str, PRNGKey]:
-  """Creates a dictionary of PRNGKeys from a tuple of key names and a seed."""
-
-  @functools.partial(jax.jit, backend='cpu')
-  def _make_rngs():
-    if not rng_keys:
-      return dict()
-    rngs = jax.random.split(jax.random.PRNGKey(seed), len(rng_keys))
-    return dict(zip(rng_keys, rngs))
-
-  return _make_rngs()
+def make_rngs(rng_keys: Tuple[str, ...], seed: int) -> Dict[str, PRNGKey]:
+  if not rng_keys:
+    return dict()
+  rngs = jax.random.split(jax.random.PRNGKey(seed), len(rng_keys))
+  return dict(zip(rng_keys, rngs))
 
 
 def multiply_no_nan(x, y):
@@ -162,16 +154,6 @@ def tree_rngs_split(rngs, num_splits=2):
   rngs = jax.tree_map(lambda rng: jax.random.split(rng, num_splits), rngs)
   slice_rngs = lambda rngs, i: jax.tree_map(lambda rng: rng[i], rngs)
   return tuple(slice_rngs(rngs, i) for i in range(num_splits))
-
-
-def tree_shape_dtype_struct(tree):
-  """Converts a PyTree with array-like objects to jax.ShapeDtypeStruct."""
-  def fn(x):
-    shape, dtype = x.shape, x.dtype
-    # Useful to convert Tensorflow Tensors.
-    dtype = dtype.as_numpy_dtype if hasattr(dtype, 'as_numpy_dtype') else dtype
-    return jax.ShapeDtypeStruct(shape=shape, dtype=dtype)
-  return jax.tree_map(fn, tree)
 
 
 def make_match_fn_from_regex_list(

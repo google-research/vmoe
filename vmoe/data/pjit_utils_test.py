@@ -22,6 +22,19 @@ import numpy as np
 from vmoe.data import pjit_utils
 
 
+def assert_trees_all_equivalent_sharding(*trees):
+
+  def cmp_fn(a, b):
+    device_map_a = a.sharding.devices_indices_map(a.shape)
+    device_map_b = b.sharding.devices_indices_map(b.shape)
+    return device_map_a == device_map_b
+
+  def err_msg_fn(a, b):
+    return f'{a.sharding=!r} is not equivalent to {b.sharding=!r}'
+
+  chex.assert_trees_all_equal_comparator(cmp_fn, err_msg_fn, *trees)
+
+
 class PrefetchToDevice(parameterized.TestCase):
 
   @parameterized.named_parameters(
@@ -30,10 +43,6 @@ class PrefetchToDevice(parameterized.TestCase):
   )
   def test(self, axis_resources):
     devices = np.asarray(jax.local_devices())
-    if devices.size == 1:
-      # TODO(jpuigcerver): Fix this test properly.
-      self.skipTest('Currently disabled because of an inconsistent '
-                    '(but equivalent) sharding specs, after a JAX refactor.')
     if devices.size > 1:
       np.random.shuffle(devices)
       devices = devices[:devices.size - devices.size % 2]
@@ -55,21 +64,17 @@ class PrefetchToDevice(parameterized.TestCase):
       # the same as explicitly calling pjit with an identity function.
       y = list(pjit_utils.prefetch_to_device(iter([x]), axis_resources, size=1))
       self.assertLen(y, 1)
-      # Check that the two ShardedDeviceArrays are the same (not only the values
-      # but how they are sharded).
-      chex.assert_trees_all_close(expected.device_buffers, y[0].device_buffers)
-      self.assertEqual([b.device() for b in expected.device_buffers],
-                       [b.device() for b in y[0].device_buffers])
-      self.assertEqual(expected.sharding_spec, y[0].sharding_spec)
-      self.assertEqual(expected.indices, y[0].indices)
+      chex.assert_trees_all_close(expected, y[0])
+      assert_trees_all_equivalent_sharding(expected, y[0])
 
   @parameterized.named_parameters(('zero', 0), ('negative', -1))
   def test_size(self, size):
     """Tests that the original objects are iterated if size is <= 0."""
-    objects = [object(), object(), object()]
-    new_objects = list(pjit_utils.prefetch_to_device(
-        iter(objects), axis_resources=None, size=size))
-    self.assertEqual(objects, new_objects)
+    with jax.sharding.Mesh(np.asarray(jax.devices()), ('d',)):
+      objects = [np.ones(16), 1 * np.ones(16), 3 * np.ones(16)]
+      new_objects = list(pjit_utils.prefetch_to_device(
+          iter(objects), axis_resources=None, size=size))
+      chex.assert_trees_all_equal(objects, new_objects)
 
 
 if __name__ == '__main__':

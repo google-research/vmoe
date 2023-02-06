@@ -26,9 +26,9 @@ import flax.struct
 import jax
 from jax.experimental import pjit
 import jax.numpy as jnp
-import numpy as np
 from vmoe import utils
 from vmoe.data import input_pipeline
+from vmoe.data import pjit_utils
 
 Array = jnp.ndarray
 DatasetIterator = clu.data.DatasetIterator
@@ -137,6 +137,12 @@ class EvaluateMultipleDatasets(periodic_actions.PeriodicCallback):
                         params_axis_resources, input_axis_resources, datasets,
                         metric_writer, rng_keys, seed, report_progress,
                         report_progress_name):
+    datasets_element_shape_dtype = {
+        name: pjit_utils.get_dataset_shape_dtype_struct(
+            datasets[name], input_axis_resources)
+        for name in datasets
+    }
+
     # Note: We create the eval_step_pjit here to avoid multiple compilation
     # steps. If the shapes of inputs/outputs for all datasets is the same, this
     # will be only compiled once.
@@ -148,6 +154,17 @@ class EvaluateMultipleDatasets(periodic_actions.PeriodicCallback):
         label_pred_fn=label_pred_fn,
         rng_keys=rng_keys)
 
+    @functools.partial(
+        pjit.pjit,
+        in_axis_resources=(), out_axis_resources=None, static_argnums=(0,))
+    def make_eval_state_pjit(seed):
+      rngs = utils.make_rngs(rng_keys, seed)
+      return EvalState(
+          num=jnp.zeros((), dtype=jnp.float32),
+          sum_correct=jnp.zeros((), dtype=jnp.float32),
+          sum_loss=jnp.zeros((), dtype=jnp.float32),
+          rngs=rngs)
+
     @cachetools.cached(
         cache={}, key=lambda name, *_: cachetools.keys.hashkey(name))
     def compile_for_dataset(name, params, train_step):
@@ -157,15 +174,14 @@ class EvaluateMultipleDatasets(periodic_actions.PeriodicCallback):
           num=jax.ShapeDtypeStruct(shape=(), dtype=jnp.float32),
           sum_correct=jax.ShapeDtypeStruct(shape=(), dtype=jnp.float32),
           sum_loss=jax.ShapeDtypeStruct(shape=(), dtype=jnp.float32),
-          rngs=utils.make_rngs(rng_keys, seed))
+          rngs=jax.eval_shape(lambda: utils.make_rngs(rng_keys, 0)))
       t0 = time.time()
-      args = utils.tree_shape_dtype_struct((
+      eval_step_pjit_ds = eval_step_pjit.lower(
           eval_state,
           params,
-          datasets[name].element_spec['image'],
-          datasets[name].element_spec['labels'],
-          datasets[name].element_spec[VALID_KEY]))
-      eval_step_pjit_ds = eval_step_pjit.lower(*args).compile()
+          datasets_element_shape_dtype[name]['image'],
+          datasets_element_shape_dtype[name]['labels'],
+          datasets_element_shape_dtype[name][VALID_KEY]).compile()
       t1 = time.time()
       metric_writer.write_scalars(train_step, {f'{name}/compile_secs': t1 - t0})
       return eval_step_pjit_ds
@@ -178,18 +194,22 @@ class EvaluateMultipleDatasets(periodic_actions.PeriodicCallback):
         # in order to use different initial seeds for each dataset and/or
         # evaluation run. Notice that each eval step will use a different seed,
         # since it's updated in the EvalState (see evaluate_step).
+        eval_state = jax.tree_util.tree_map(lambda x: x.block_until_ready(),
+                                            make_eval_state_pjit(seed))
+        ds_iter = pjit_utils.prefetch_to_device(
+            iter(dataset), input_axis_resources, size=0)
         t0 = time.time()
         eval_state = evaluate_dataset(eval_step_pjit=eval_step_pjit_ds,
-                                      dataset=dataset,
-                                      params=params,
-                                      rng_keys=rng_keys,
-                                      seed=seed)
+                                      eval_state=eval_state,
+                                      dataset=ds_iter,
+                                      params=params)
         t1 = time.time()
-        metric_writer.write_scalars(step, {
-            f'{name}/prec@1': eval_state.sum_correct / eval_state.num,
-            f'{name}/loss': eval_state.sum_loss / eval_state.num,
-            f'{name}/duration_secs': t1 - t0,
-        })
+        with jax.spmd_mode('allow_all'):
+          metric_writer.write_scalars(step, {
+              f'{name}/prec@1': eval_state.sum_correct / eval_state.num,
+              f'{name}/loss': eval_state.sum_loss / eval_state.num,
+              f'{name}/duration_secs': t1 - t0,
+          })
         # Reset iterator for the next evaluation.
         dataset.reset()
 
@@ -203,17 +223,11 @@ class EvaluateMultipleDatasets(periodic_actions.PeriodicCallback):
 def evaluate_dataset(
     *,
     eval_step_pjit: EvalStepPjitFn,
-    dataset: DatasetIterator,
+    eval_state: EvalState,
+    dataset: Iterable[PyTree],
     params: PyTree,
-    rng_keys: Sequence[str],
-    seed: int = 0,
 ) -> EvalState:
   """Evaluates a given model on the given dataset."""
-  eval_state = EvalState(
-      num=np.zeros((), dtype=np.float32),
-      sum_correct=np.zeros((), dtype=np.float32),
-      sum_loss=np.zeros((), dtype=np.float32),
-      rngs=utils.make_rngs(tuple(rng_keys), seed))
   for batch in dataset:
     eval_state = eval_step_pjit(eval_state, params, batch['image'],
                                 batch['labels'], batch[VALID_KEY])

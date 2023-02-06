@@ -68,7 +68,6 @@ from typing import Any, Optional, Sequence, Tuple, Union
 from absl import logging
 import flax.traverse_util
 import jax
-from jax._src import sharding
 from jax.experimental import maps
 from jax.experimental import pjit
 import numpy as np
@@ -76,7 +75,7 @@ import numpy as np
 AxisResourcesRegexes = Sequence[Tuple[str, 'UnparsedPartitionSpec']]
 Device = jax.lib.xla_client.Device
 Mesh = jax.sharding.Mesh
-NamedSharding = sharding.NamedSharding
+NamedSharding = jax.sharding.NamedSharding
 PartitionSpec = jax.sharding.PartitionSpec
 PyTree = Any
 TpuCoords = Tuple[int, int, int, int]
@@ -84,13 +83,13 @@ OtherCoords = Tuple[int, int]
 UnparsedPartitionSpec = Union[str, Tuple[Union[str, Tuple[str, ...]], ...]]
 
 
-def get_array_sharding_or_default(arr: jax.Array) -> sharding.Sharding:
+def get_array_sharding_or_default(arr: jax.Array) -> jax.sharding.Sharding:
   if hasattr(arr, 'sharding'):
     return arr.sharding
   else:
     op_sharding = jax.xla.xc.OpSharding()
     op_sharding.type = jax.xla.xc.OpSharding.Type.REPLICATED
-    return sharding.OpShardingSharding(jax.devices(), op_sharding)
+    return jax.sharding.OpShardingSharding(jax.devices(), op_sharding)
 
 
 def process_has_contiguous_device_slice(devices: np.ndarray,
@@ -416,38 +415,6 @@ def tree_axis_resources_from_regexes(
   axis_resources = flax.traverse_util.unflatten_dict(axis_resources, sep='/')
   axis_resources = flax.serialization.from_state_dict(tree, axis_resources)
   return axis_resources
-
-
-def tree_global_shape(tree: PyTree, axis_resources: PyTree,
-                      mesh: Mesh) -> PyTree:
-  """Returns a PyTree of ShapedArray leaves with the global shape of the arrays in the input tree."""
-  tree_leaves, struct = jax.tree_flatten(tree)
-  # pylint: disable=protected-access
-  axis_resources_leaves, struct2 = jax.tree_flatten(axis_resources)
-  if struct != struct2:
-    raise ValueError(f'The tree structs do not match.\n'
-                     f'tree: {struct}\n'
-                     f'resource_axis: {struct2}')
-  shardings = [NamedSharding(mesh, spec) for spec in axis_resources_leaves]
-  if not all(
-      hasattr(x, 'aval') or (hasattr(x, 'shape') and hasattr(x, 'dtype'))
-      for x in tree_leaves):
-    raise ValueError(
-        "All leaves in the input tree must have an 'aval', or 'shape' and "
-        "'dtype' attributes.")
-  tree_leaves = [
-      x.aval if hasattr(x, 'aval') else jax.ShapedArray(x.shape, x.dtype)
-      for x in tree_leaves
-  ]
-  positional_semantics = [maps._PositionalSemantics.LOCAL for _ in tree_leaves]
-  shardings = [
-      pjit.to_op_sharding_sharding(s, a.ndim)
-      for a, s in zip(tree_leaves, shardings)
-  ]
-  global_aval_leaves = pjit.local_to_global(
-      positional_semantics, tree_leaves, shardings, mesh)
-  return jax.tree_unflatten(struct, global_aval_leaves)
-  # pylint: enable=protected-access
 
 
 def with_sharding_constraint(x: PyTree, partition_spec: PartitionSpec):
