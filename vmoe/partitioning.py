@@ -231,7 +231,7 @@ def get_logical_mesh(partitions: Tuple[int, ...],
   """Maps a hardware mesh to a logical mesh with axes ('expert', 'replica')."""
   # Number of replicas in each dimension of the hardware mesh.
   replicas = tuple(
-      s // p for p, s in jax.util.safe_zip(partitions, hardware_mesh.shape))
+      s // p for p, s in zip(partitions, hardware_mesh.shape, strict=True))
   # Transpose hardware axes to (Z, Y, X, C) / (H, D) for TPU / other devices.
   replicas = tuple(reversed(replicas))
   partitions = tuple(reversed(partitions))
