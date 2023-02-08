@@ -101,8 +101,6 @@ def create_evaluation_hook(
     progress_hook: ReportProgress,
     datasets: Mapping[str, DatasetIterator],
     loss_fn: Callable[[Array, Array], Array],
-    params_axis_resources: PyTree,
-    input_axis_resources: PartitionSpec,
     first_step: int,
     train_steps: int,
     extra_rng_keys: Sequence[str],
@@ -119,8 +117,6 @@ def create_evaluation_hook(
   periodic_action = evaluator.EvaluateMultipleDatasets(
       apply_fn=apply_fn,
       loss_fn=loss_fn,
-      params_axis_resources=params_axis_resources,
-      input_axis_resources=input_axis_resources,
       datasets=datasets,
       metric_writer=writer,
       rng_keys=extra_rng_keys,
@@ -136,8 +132,6 @@ def create_fewshot_hook(
     base_model_config: ml_collections.ConfigDict,
     writer: metric_writers.MetricWriter,
     progress_hook: ReportProgress,
-    variables_axis_resources: PyTree,
-    input_axis_resources: PartitionSpec,
     first_step: int,
     train_steps: int,
     extra_rng_keys: Sequence[str],
@@ -157,8 +151,6 @@ def create_fewshot_hook(
   periodic_action = fewshot.FewShotPeriodicAction(
       metric_writer=writer,
       apply_fn=apply_fn,
-      variables_axis_resources=variables_axis_resources,
-      input_axis_resources=input_axis_resources,
       rng_keys=extra_rng_keys,
       report_progress=progress_hook,
       report_progress_name='fewshot',
@@ -606,16 +598,14 @@ def _train_and_evaluate(config: ml_collections.ConfigDict, workdir: str,
       train_batch_size)
 
   # Get the global shape of the image array.
-  input_axis_resources = config.get('input_axis_resources', (mesh.axis_names,))
-  input_axis_resources = partitioning.parse_partition_spec(input_axis_resources)
   datataset_element_shape_dtype = pjit_utils.get_dataset_shape_dtype_struct(
-      datasets['train'], input_axis_resources)
+      datasets['train'])
 
   train_state_initialize_fn = make_create_train_state_fn(
       model=create_flax_model(config=config.model, deterministic=False),
       optimizer_config=config.optimizer,
       input_shape=datataset_element_shape_dtype['image'].shape,
-      input_axis_resources=input_axis_resources,
+      input_axis_resources=datataset_element_shape_dtype['image'].sharding,
       train_steps=train_steps,
       extra_rng_keys=tuple(config.get('extra_rng_keys', [])),
       seed=config.get('seed', 0))
@@ -641,7 +631,9 @@ def _train_and_evaluate(config: ml_collections.ConfigDict, workdir: str,
   if config.get('mixup', {}):
     mixup_config = config.mixup.to_dict()
     train_step_fn = wrap_train_step_with_mixup(
-        train_step_fn, partition_spec=input_axis_resources, **mixup_config)
+        train_step_fn,
+        partition_spec=jax.sharding.PartitionSpec(mesh.axis_names,),
+        **mixup_config)
 
   train_step_pjit = pjit.pjit(
       fun=train_step_fn,
@@ -669,9 +661,6 @@ def _train_and_evaluate(config: ml_collections.ConfigDict, workdir: str,
       datasets={name: ds for name, ds in datasets.items() if name != 'train'},
       loss_fn=eval_loss_fn,
       label_pred_fn=label_pred_fn,
-      params_axis_resources=jax.tree_util.tree_map(lambda x: x.sharding,
-                                                   train_state.params),
-      input_axis_resources=input_axis_resources,
       first_step=init_step + 1,
       train_steps=train_steps,
       extra_rng_keys=config.get('extra_rng_keys', []),
@@ -680,11 +669,6 @@ def _train_and_evaluate(config: ml_collections.ConfigDict, workdir: str,
       base_model_config=config_model_eval,
       writer=writer,
       progress_hook=progress_hook,
-      variables_axis_resources={
-          'params': jax.tree_util.tree_map(lambda x: x.sharding,
-                                           train_state.params),
-      },
-      input_axis_resources=input_axis_resources,
       first_step=init_step + 1,
       train_steps=train_steps,
       extra_rng_keys=config.get('extra_rng_keys', []),
@@ -701,8 +685,6 @@ def _train_and_evaluate(config: ml_collections.ConfigDict, workdir: str,
     # Create iterator over the train dataset.
     tr_iter = pjit_utils.prefetch_to_device(
         iterator=datasets['train'],
-        axis_resources=jax.tree_util.tree_map(lambda x: x.sharding.spec,
-                                              datataset_element_shape_dtype),
         size=config.dataset.train.get('prefetch_device'))
     for step, batch in zip(range(init_step + 1, train_steps + 1), tr_iter):
       profile_hook(step)
@@ -795,7 +777,7 @@ def wrap_train_step_with_mixup(
     return train_step_fn
 
   if granularity == 'batch':
-    partition_spec = None
+    partition_spec = jax.sharding.PartitionSpec()
 
   if granularity == 'example':
     logging.warning(

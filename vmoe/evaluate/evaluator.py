@@ -72,8 +72,6 @@ class EvaluateMultipleDatasets(periodic_actions.PeriodicCallback):
       apply_fn: Callable[..., Any],
       loss_fn: Callable[[Array, Array], Array],
       label_pred_fn: Callable[[Array], Array],
-      params_axis_resources: PyTree,
-      input_axis_resources: PartitionSpec,
       datasets: Mapping[str, DatasetIterator],
       metric_writer: metric_writers.MetricWriter,
       rng_keys: Sequence[str],
@@ -93,11 +91,6 @@ class EvaluateMultipleDatasets(periodic_actions.PeriodicCallback):
         (outputs, labels) and return the loss for each input example.
       label_pred_fn: Function that determines how to go from the outputs of the
         model to the predicted label. A common case is argmax(logits, -1).
-      params_axis_resources: PyTree with the same structure as the params passed
-        to the model, but with PartitionSpec leaves indicating how each array is
-        partitioned.
-      input_axis_resources: PartitionSpec indicating how the input to the model
-        is partitioned.
       datasets: Mapping from names to DatasetIterator objects with the datasets
         to evaluate.
       metric_writer: CLU metric_writer object, used to report the evaluation
@@ -116,8 +109,6 @@ class EvaluateMultipleDatasets(periodic_actions.PeriodicCallback):
         apply_fn=apply_fn,
         loss_fn=loss_fn,
         label_pred_fn=label_pred_fn,
-        params_axis_resources=params_axis_resources,
-        input_axis_resources=input_axis_resources,
         metric_writer=metric_writer,
         datasets=datasets,
         rng_keys=tuple(rng_keys),
@@ -133,13 +124,11 @@ class EvaluateMultipleDatasets(periodic_actions.PeriodicCallback):
         pass_step_and_time=True)
 
   @classmethod
-  def _make_callback_fn(cls, *, apply_fn, loss_fn, label_pred_fn,
-                        params_axis_resources, input_axis_resources, datasets,
+  def _make_callback_fn(cls, *, apply_fn, loss_fn, label_pred_fn, datasets,
                         metric_writer, rng_keys, seed, report_progress,
                         report_progress_name):
     datasets_element_shape_dtype = {
-        name: pjit_utils.get_dataset_shape_dtype_struct(
-            datasets[name], input_axis_resources)
+        name: pjit_utils.get_dataset_shape_dtype_struct(datasets[name])
         for name in datasets
     }
 
@@ -147,8 +136,6 @@ class EvaluateMultipleDatasets(periodic_actions.PeriodicCallback):
     # steps. If the shapes of inputs/outputs for all datasets is the same, this
     # will be only compiled once.
     eval_step_pjit = make_eval_step_pjit(
-        params_axis_resources=params_axis_resources,
-        input_axis_resources=input_axis_resources,
         apply_fn=apply_fn,
         loss_fn=loss_fn,
         label_pred_fn=label_pred_fn,
@@ -196,8 +183,7 @@ class EvaluateMultipleDatasets(periodic_actions.PeriodicCallback):
         # since it's updated in the EvalState (see evaluate_step).
         eval_state = jax.tree_util.tree_map(lambda x: x.block_until_ready(),
                                             make_eval_state_pjit(seed))
-        ds_iter = pjit_utils.prefetch_to_device(
-            iter(dataset), input_axis_resources, size=0)
+        ds_iter = pjit_utils.prefetch_to_device(iter(dataset), size=0)
         t0 = time.time()
         eval_state = evaluate_dataset(eval_step_pjit=eval_step_pjit_ds,
                                       eval_state=eval_state,
@@ -256,8 +242,6 @@ def evaluate_step(
 
 
 def make_eval_step_pjit(
-    params_axis_resources: PyTree,
-    input_axis_resources: PartitionSpec,
     apply_fn: Callable[..., Any],
     loss_fn: Callable[[Array, Array], Array],
     label_pred_fn: Callable[[Array], Array],
@@ -275,13 +259,6 @@ def make_eval_step_pjit(
           apply_fn=apply_fn,
           loss_fn=loss_fn,
           label_pred_fn=label_pred_fn),
-      in_axis_resources=(
-          eval_state_axis_resources,  # state
-          params_axis_resources,      # params
-          input_axis_resources,       # images
-          input_axis_resources,       # labels
-          input_axis_resources,       # valid
-      ),
       out_axis_resources=eval_state_axis_resources,
       donate_argnums=(0, 2, 3, 4))
   return eval_step_pjit

@@ -19,7 +19,7 @@ from absl.testing import absltest
 from absl.testing import parameterized
 import chex
 import clu.data
-import jax.experimental.maps
+import jax
 import numpy as np
 import tensorflow as tf
 from vmoe.evaluate import fewshot
@@ -132,8 +132,6 @@ class FewShotPeriodicActionTest(absltest.TestCase):
         metric_writer=mock_metric_writer,
         datasets={'foo': ('tfds_name', 'train_split', 'test_split')},
         apply_fn=self._apply_fn,
-        variables_axis_resources={},
-        input_axis_resources=fewshot.PartitionSpec('d'),
         shots=[2, 5],
         l2_regs=[0.01],
         main_task=('foo', 2),
@@ -162,8 +160,6 @@ class FewShotPeriodicActionTest(absltest.TestCase):
         metric_writer=mock_metric_writer,
         datasets={'foo': ('tfds_name', 'train_split', 'test_split')},
         apply_fn=self._apply_fn,
-        variables_axis_resources={},
-        input_axis_resources=fewshot.PartitionSpec('d'),
         shots=[2, 5],
         l2_regs=[0.01],
         main_task=('foo', 2),
@@ -199,8 +195,6 @@ class FewShotPeriodicActionTest(absltest.TestCase):
         metric_writer=mock_metric_writer,
         datasets={'foo': ('tfds_name', 'train_split', 'test_split')},
         apply_fn=self._apply_fn,
-        variables_axis_resources={},
-        input_axis_resources=fewshot.PartitionSpec('d'),
         shots=[2, 5],
         l2_regs=[0.01],
         rng_keys=(),

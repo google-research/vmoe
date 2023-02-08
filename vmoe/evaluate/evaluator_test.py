@@ -82,8 +82,6 @@ class EvaluatorTest(absltest.TestCase):
     # Create random test dataset.
     dataset, expected_eval_state = self._create_dataset_and_expected_state()
     eval_step_pjit = evaluator.make_eval_step_pjit(
-        params_axis_resources={},  # Model has no parameters.
-        input_axis_resources=PartitionSpec('d',),
         apply_fn=self._apply_fn,
         loss_fn=self._loss_fn,
         label_pred_fn=self._label_pred_fn,
@@ -119,8 +117,6 @@ class EvaluatorTest(absltest.TestCase):
           apply_fn=self._apply_fn,
           loss_fn=self._loss_fn,
           label_pred_fn=self._label_pred_fn,
-          params_axis_resources={},
-          input_axis_resources=PartitionSpec('d'),
           datasets=datasets,
           metric_writer=metric_writer,
           rng_keys=[],
@@ -165,8 +161,6 @@ class EvaluatorTest(absltest.TestCase):
           apply_fn=self._apply_fn,
           loss_fn=self._loss_fn,
           label_pred_fn=self._label_pred_fn,
-          params_axis_resources={},
-          input_axis_resources=PartitionSpec('d'),
           datasets=datasets,
           metric_writer=metric_writer,
           rng_keys=[],

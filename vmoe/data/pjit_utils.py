@@ -15,36 +15,54 @@
 """Module with input pipeline functions specific for pjit."""
 import collections
 import itertools
-from typing import Any, Iterator, Optional, Union
+from typing import Any, Iterator, List, Optional, Sequence
 
 from clu.data import dataset_iterator
 import jax
 from jax.experimental import maps
-from jax.experimental import multihost_utils
-from jax.experimental import pjit
+import numpy as np
 
 Mesh = jax.sharding.Mesh
 PyTree = Any
-PartitionSpec = Union[jax.sharding.PartitionSpec, PyTree]
+
+
+def get_dataset_shape_dtype_struct(
+    iterator: dataset_iterator.DatasetIterator,
+    mesh: Optional[Mesh] = None,
+) -> PyTree:
+  """Returns the jax.ShapeDtypeStruct."""
+  mesh = mesh or maps.thread_resources.env.physical_mesh
+  assert mesh is not None and not mesh.empty, f'No mesh or empty mesh. {mesh=}'
+
+  pspec = jax.sharding.PartitionSpec(mesh.axis_names,)
+  sharding = jax.sharding.NamedSharding(mesh, pspec)
+
+  def fn(x):
+    # Dtype and local shape (of this particular process) of the given array x.
+    shape, dtype = x.shape, x.dtype
+    dtype = dtype.as_numpy_dtype if hasattr(dtype, 'as_numpy_dtype') else dtype
+    # Global shape
+    shape = (shape[0] * jax.process_count(),) + shape[1:]
+    # Return a ShapeDtypeStruct with the global shape and sharding.
+    return jax.ShapeDtypeStruct(shape=shape, dtype=dtype, sharding=sharding)
+
+  return jax.tree_util.tree_map(fn, iterator.element_spec)
 
 
 def prefetch_to_device(
     iterator: Iterator[PyTree],
-    axis_resources: PyTree,
     size: int,
     mesh: Optional[Mesh] = None,
 ) -> Iterator[PyTree]:
   """Iterates data and transfers it to devices creating jax.Arrays.
 
-  This utility takes an iterator and returns a new iterator which fills an on
+  This utility takes an iterator and returns a new iterator which fills a
   device prefetch buffer. Eager prefetching can improve the performance of
   training loops significantly by overlapping compute and data transfer.
   This is similar to `flax.jax_utils.prefetch_to_device` but works with `pjit`.
 
   Args:
     iterator: An iterator that returns a PyTree of ndarrays.
-    axis_resources: A PyTree with the same structure as those returned from the
-      iterator, specifying how the ndarrays are partitioned.
     size: The size of the prefetch buffer.
     mesh: If given, shards the arrays using this mesh. If None, uses the active
       mesh.
@@ -56,9 +74,18 @@ def prefetch_to_device(
   mesh = mesh or maps.thread_resources.env.physical_mesh
   assert mesh is not None and not mesh.empty, f'No mesh or empty mesh. {mesh=}'
 
-  def _to_global(data):
-    return multihost_utils.host_local_array_to_global_array(
-        data, mesh, axis_resources)
+  pspec = jax.sharding.PartitionSpec(mesh.axis_names,)
+  sharding = jax.sharding.NamedSharding(mesh, pspec)
+
+  local_devices = mesh.local_devices
+
+  def _to_global(x):
+    # View x as a numpy array (in case it's a TF tensor).
+    x = np.asarray(memoryview(x))
+    device_buffers = put_to_devices(x, local_devices)
+    global_shape = (x.shape[0] * jax.process_count(),) + x.shape[1:]
+    return jax.make_array_from_single_device_arrays(
+        global_shape, sharding, device_buffers)
 
   if size and size > 0:
     # We fill items to this queue, and pop from it when a new item is yielded.
@@ -66,7 +93,7 @@ def prefetch_to_device(
 
     def enqueue(n):
       for data in itertools.islice(iterator, n):
-        queue.append(_to_global(data))
+        queue.append(jax.tree_map(_to_global, data))
 
     enqueue(size)
     while queue:
@@ -76,30 +103,20 @@ def prefetch_to_device(
     # If size is None, 0 or negative, simply create jax.Arrays without
     # prefetching.
     for data in iterator:
-      yield _to_global(data)
+      yield jax.tree_map(_to_global, data)
 
 
-def get_dataset_shape_dtype_struct(
-    iterator: dataset_iterator.DatasetIterator,
-    pspec: PartitionSpec,
-    mesh: Optional[Mesh] = None,
-) -> PyTree:
-  """Returns the jax.ShapeDtypeStruct."""
-  mesh = mesh or maps.thread_resources.env.physical_mesh
-  assert mesh is not None and not mesh.empty, f'No mesh or empty mesh. {mesh=}'
-
-  def fn(x, s):
-    # Dtype and local shape (of this particular process) of the given array x.
-    shape, dtype = x.shape, x.dtype
-    dtype = dtype.as_numpy_dtype if hasattr(dtype, 'as_numpy_dtype') else dtype
-    # Get the global shape of the array, given the mesh and the pspec s.
-    shape = multihost_utils._local_to_global_aval(  # pylint: disable=protected-access
-        jax.ShapedArray(shape, dtype), mesh, s).shape
-    sharding = maps.NamedSharding(mesh, s)
-    # Return a ShapeDtypeStruct with the global shape and sharding.
-    return jax.ShapeDtypeStruct(shape=shape, dtype=dtype, sharding=sharding)
-
-  if isinstance(pspec, pjit.PartitionSpec):
-    return jax.tree_util.tree_map(lambda x: fn(x, pspec), iterator.element_spec)
-  else:
-    return jax.tree_util.tree_map(fn, iterator.element_spec, pspec)
+def put_to_devices(host_array: np.ndarray,
+                   local_devices: Sequence[Any]) -> List[Any]:
+  """Transfers a host array to the local devices, sharding the first axis entirely."""
+  local_device_count = len(local_devices)
+  try:
+    per_device_arrays = np.split(host_array, local_device_count, axis=0)
+  except ValueError as array_split_error:
+    raise ValueError(
+        f'Unable to put to devices shape {host_array.shape} with '
+        f'local device count {local_device_count}') from array_split_error
+  device_buffers = [
+      jax.device_put(arr, d) for arr, d in zip(per_device_arrays, local_devices)
+  ]
+  return device_buffers

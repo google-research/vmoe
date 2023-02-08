@@ -37,11 +37,7 @@ def assert_trees_all_equivalent_sharding(*trees):
 
 class PrefetchToDevice(parameterized.TestCase):
 
-  @parameterized.named_parameters(
-      ('_array_first_mesh_both', (('a', 'b'),)),
-      ('_array_first_mesh_first_array_second_mesh_second', ('a', 'b')),
-  )
-  def test(self, axis_resources):
+  def test(self):
     devices = np.asarray(jax.local_devices())
     if devices.size > 1:
       np.random.shuffle(devices)
@@ -49,11 +45,10 @@ class PrefetchToDevice(parameterized.TestCase):
       devices = devices.reshape((-1, 2))
     else:
       devices = devices.reshape((1, 1))
-    axis_names = ('a', 'b')
     # Generate random test data.
     x = np.random.normal(size=(256, 32))
-    axis_resources = jax.sharding.PartitionSpec(*axis_resources)
-    with jax.sharding.Mesh(devices, axis_names):
+    axis_resources = jax.sharding.PartitionSpec(('a', 'b'))
+    with jax.sharding.Mesh(devices, ('a', 'b')):
       # Transfer data to device using explicit call to pjit, wrapping an
       # identity function. This is the expected ShardedDeviceArray.
       expected = pjit.pjit(
@@ -62,7 +57,7 @@ class PrefetchToDevice(parameterized.TestCase):
           out_axis_resources=axis_resources)(x)
       # Prefetch data using `prefetch_to_device` and check that the result is
       # the same as explicitly calling pjit with an identity function.
-      y = list(pjit_utils.prefetch_to_device(iter([x]), axis_resources, size=1))
+      y = list(pjit_utils.prefetch_to_device(iter([x]), size=1))
       self.assertLen(y, 1)
       chex.assert_trees_all_close(expected, y[0])
       assert_trees_all_equivalent_sharding(expected, y[0])
@@ -72,8 +67,7 @@ class PrefetchToDevice(parameterized.TestCase):
     """Tests that the original objects are iterated if size is <= 0."""
     with jax.sharding.Mesh(np.asarray(jax.devices()), ('d',)):
       objects = [np.ones(16), 1 * np.ones(16), 3 * np.ones(16)]
-      new_objects = list(pjit_utils.prefetch_to_device(
-          iter(objects), axis_resources=None, size=size))
+      new_objects = list(pjit_utils.prefetch_to_device(iter(objects), size))
       chex.assert_trees_all_equal(objects, new_objects)
 
 

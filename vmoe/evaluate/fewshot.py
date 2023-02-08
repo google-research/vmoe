@@ -60,8 +60,6 @@ class FewShotPeriodicAction(periodic_actions.PeriodicCallback):
       metric_writer: metric_writers.MetricWriter,
       datasets: Mapping[str, Tuple[str, str, str]],
       apply_fn: Callable[..., Any],
-      variables_axis_resources: PyTree,
-      input_axis_resources: PartitionSpec,
       rng_keys: Sequence[str],
       seed: int = 0,
       seed_fold_in_step: bool = False,
@@ -90,11 +88,6 @@ class FewShotPeriodicAction(periodic_actions.PeriodicCallback):
       apply_fn: Function used to apply the model on a batch of inputs. This
         typically is the `apply` method of a Linen module. It must return an
         array (features extract by the model) and a dict with metrics.
-      variables_axis_resources: PyTree with the same structure as the variables
-        passed to the apply function, but with PartitionSpec leaves indicating
-        how each variable is partitioned.
-      input_axis_resources: PartitionSpec indicating how the input to the model
-        is partitioned.
       rng_keys: Collection of PRNG names that the `apply_fn` expects. It can be
         empty if the evaluation is deterministic.
       seed: Seed used to create PRNGKeys (default = 0).
@@ -119,13 +112,10 @@ class FewShotPeriodicAction(periodic_actions.PeriodicCallback):
         # Used to obtain the representation/labels/mask of a batch of images.
         representation_fn=_make_fewshot_step_pjit(
             apply_fn=apply_fn,
-            variables_axis_resources=variables_axis_resources,
-            input_axis_resources=input_axis_resources,
             rng_keys=rng_keys),
         shots=shots,
         l2_regs=l2_regs,
         datasets_info=_get_datasets(datasets, **dataset_kwargs),
-        input_axis_resources=input_axis_resources,
         prefetch_to_device=prefetch_to_device,
         rng_keys=tuple(rng_keys),
         seed=seed,
@@ -146,7 +136,7 @@ class FewShotPeriodicAction(periodic_actions.PeriodicCallback):
 
   @classmethod
   def _make_callback_fn(cls, *, representation_fn, shots, l2_regs,
-                        datasets_info, input_axis_resources, prefetch_to_device,
+                        datasets_info, prefetch_to_device,
                         rng_keys, seed, seed_fold_in_step, seeds_per_step,
                         metric_writer, report_progress, report_progress_name,
                         main_task, main_task_prefix):
@@ -154,9 +144,6 @@ class FewShotPeriodicAction(periodic_actions.PeriodicCallback):
     def make_dataset_iterator(dataset_iterator: DatasetIterator):
       return vmoe.data.pjit_utils.prefetch_to_device(
           iterator=dataset_iterator,
-          axis_resources={
-              key: input_axis_resources for key in dataset_iterator.element_spec
-          },
           size=prefetch_to_device)
 
     @functools.partial(
@@ -340,8 +327,6 @@ def _get_datasets(
 
 def _make_fewshot_step_pjit(
     apply_fn: Callable[..., Any],
-    variables_axis_resources: PyTree,
-    input_axis_resources: PartitionSpec,
     rng_keys: Sequence[str],
 ):
   """Wraps _fewshot_step with pjit."""
@@ -349,13 +334,6 @@ def _make_fewshot_step_pjit(
       rngs={key: PartitionSpec() for key in rng_keys})
   fewshot_step_pjit = jax.experimental.pjit.pjit(
       functools.partial(_fewshot_step, apply_fn=apply_fn),
-      in_axis_resources=(
-          state_axis_resources,      # state
-          variables_axis_resources,  # variables
-          input_axis_resources,      # image
-          input_axis_resources,      # label
-          input_axis_resources,      # valid
-      ),
       out_axis_resources=(
           state_axis_resources,   # state
           # Note: we dont partition these so that each host gets a copy of all

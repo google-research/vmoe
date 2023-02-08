@@ -132,8 +132,6 @@ def run_pgd_attack(config: ml_collections.ConfigDict, workdir: str):
   data_axis_resources = PartitionSpec(mesh.axis_names)
   dataset_iter = pjit_utils.prefetch_to_device(
       iterator=dataset,
-      axis_resources=jax.tree_map(lambda _: data_axis_resources,
-                                  dataset.element_spec),
       size=config.dataset.get('prefetch_device'),
       mesh=mesh)
   # Initialize PGD state to track statistics over the entire dataset.
