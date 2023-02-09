@@ -19,7 +19,7 @@ import zlib
 import jax
 import numpy as np
 
-Device = jax.xla.Device
+Device = jax.Device
 
 
 @functools.partial(jax.pmap, axis_name='devices')

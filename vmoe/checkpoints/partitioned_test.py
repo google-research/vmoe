@@ -102,7 +102,7 @@ class CreateMapSliceNdToCheckpointShardTest(absltest.TestCase):
 
   @classmethod
   def _make_shard(cls, process_index):
-    device = mock.create_autospec(jax.xla.Device, instance=True)
+    device = mock.create_autospec(jax.Device, instance=True)
     device.process_index = process_index
     shard = mock.create_autospec(partitioned.Shard, instance=True)
     shard.device = device
@@ -494,7 +494,7 @@ class UpdateLazyArrayChunksWithLeafTest(absltest.TestCase):
 
   @classmethod
   def _make_shard(cls, process_index, index):
-    device = mock.create_autospec(jax.xla.Device, instance=True)
+    device = mock.create_autospec(jax.Device, instance=True)
     device.process_index = process_index
     shard = mock.create_autospec(partitioned.Shard, instance=True)
     shard.device = device
