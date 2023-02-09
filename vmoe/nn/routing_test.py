@@ -12,17 +12,29 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Tests for routing."""
 from unittest import mock
 
 from absl.testing import absltest
+from absl.testing import parameterized
 import chex
 import jax
 import jax.numpy as jnp
 from vmoe.nn import routing
 
 
-class NoisyTopExpertsPerItemRouterTest(absltest.TestCase):
+class NoisyTopExpertsPerItemRouterTest(parameterized.TestCase):
+
+  def setUp(self):
+    super().setUp()
+    # We mock get_top_items_per_expert_dispatcher to avoid having to specify the
+    # parameters of the dispatcher during testing. The output of the
+    # NoisyTopItemsPerExpertRouter is supposed to be a dispatcher, but we will
+    # simply return the `gates_softmax`, which is fine for testing purposes.
+    self.mock_get_top_items_per_expert_dispatcher = self.enter_context(
+        mock.patch.object(
+            routing.vmoe.moe,
+            'get_top_experts_per_item_dispatcher',
+            side_effect=lambda x, **_: x))
 
   def test_gshard_auxiliary_loss(self):
     gates = jnp.asarray([[.5, .4, .1], [.3, .3, .4], [.1, .2, .7],
@@ -71,11 +83,8 @@ class NoisyTopExpertsPerItemRouterTest(absltest.TestCase):
   # parameters of the dispatcher during testing. The output of the
   # NoisyTopExpertsPerItemRouter is supposed to be a dispatcher, but we will
   # simply return the `gates_softmax`, which is fine for testing purposes.
-  @mock.patch.object(
-      routing.vmoe.moe,
-      'get_top_experts_per_item_dispatcher',
-      side_effect=lambda x, **_: x)
-  def test_forward_deterministic(self, unused_mock):
+
+  def test_forward_deterministic(self):
     """Tests that output is the same given two different gating PRNG seeds."""
     x = jnp.arange(5 * 4).reshape(1, 5, 4).astype(jnp.float32)
     variables = {'params': {'dense': {'kernel': jnp.eye(4)}}}
@@ -90,11 +99,7 @@ class NoisyTopExpertsPerItemRouterTest(absltest.TestCase):
     chex.assert_trees_all_close(y1, y2)
     chex.assert_trees_all_close(m1, m2)
 
-  @mock.patch.object(
-      routing.vmoe.moe,
-      'get_top_experts_per_item_dispatcher',
-      side_effect=lambda x, **_: x)
-  def test_forward_not_deterministic(self, unused_mock):
+  def test_forward_not_deterministic(self):
     """Tests that output is different given two different gating PRNG seeds."""
     x = jnp.arange(5 * 4).reshape(1, 5, 4).astype(jnp.float32)
     variables = {'params': {'dense': {'kernel': jnp.eye(4)}}}
@@ -116,17 +121,20 @@ class NoisyTopExpertsPerItemRouterTest(absltest.TestCase):
     chex.assert_trees_all_equal_comparator(different_fn, error_msg_fn, m1, m2)
 
 
-class NoisyTopItemsPerExpertRouterTest(absltest.TestCase):
+class NoisyTopItemsPerExpertRouterTest(parameterized.TestCase):
 
-  # We mock get_top_items_per_expert_dispatcher to avoid having to specify the
-  # parameters of the dispatcher during testing. The output of the
-  # NoisyTopItemsPerExpertRouter is supposed to be a dispatcher, but we will
-  # simply return the `gates_softmax`, which is fine for testing purposes.
-  @mock.patch.object(
-      routing.vmoe.moe,
-      'get_top_items_per_expert_dispatcher',
-      side_effect=lambda x, **_: (x, {}))
-  def test_forward_deterministic(self, unused_mock):
+  def setUp(self):
+    super().setUp()
+    # We mock get_top_items_per_expert_dispatcher to avoid having to specify the
+    # parameters of the dispatcher during testing. The output of the
+    # NoisyTopItemsPerExpertRouter is supposed to be a dispatcher, but we will
+    # simply return the `gates_softmax`, which is fine for testing purposes.
+    self.mock_get_top_items_per_expert_dispatcher = self.enter_context(
+        mock.patch.object(
+            routing.vmoe.moe, 'get_top_items_per_expert_dispatcher',
+            side_effect=lambda x, **_: (x, {})))
+
+  def test_forward_deterministic(self):
     """Tests that output is the same given two different gating PRNG seeds."""
     x = jnp.arange(5 * 4).reshape(1, 5, 4).astype(jnp.float32)
     variables = {'params': {'dense': {'kernel': jnp.eye(4)}}}
@@ -139,11 +147,7 @@ class NoisyTopItemsPerExpertRouterTest(absltest.TestCase):
     y2, _ = layer.apply(variables, x, rngs={'gating': jax.random.PRNGKey(1)})
     chex.assert_trees_all_close(y1, y2)
 
-  @mock.patch.object(
-      routing.vmoe.moe,
-      'get_top_items_per_expert_dispatcher',
-      side_effect=lambda x, **_: (x, {}))
-  def test_forward_not_deterministic(self, unused_mock):
+  def test_forward_not_deterministic(self):
     """Tests that output is different given two different gating PRNG seeds."""
     x = jnp.arange(5 * 4).reshape(1, 5, 4).astype(jnp.float32)
     variables = {'params': {'dense': {'kernel': jnp.eye(4)}}}
