@@ -22,7 +22,6 @@ import chex
 import clu.data
 import flax.linen as nn
 import jax
-from jax.experimental import maps
 from jax.experimental import pjit
 import jax.numpy as jnp
 import ml_collections
@@ -74,7 +73,7 @@ class CreateOrReuseTrainStateTest(parameterized.TestCase):
   )
   def test(self, partition_spec):
     """Tests the create_or_reuse_train_state function."""
-    mesh = maps.Mesh(np.asarray(jax.devices()), ('a',))
+    mesh = jax.sharding.Mesh(np.asarray(jax.devices()), ('a',))
     # This value will be reused when calling create_or_reuse_train_state.
     with mesh:
       bar = pjit.pjit(
@@ -92,7 +91,7 @@ class CreateOrReuseTrainStateTest(parameterized.TestCase):
           apply_fn=lambda x: x, params=params, tx=optimizer_tx, rngs={})
     train_state = jax.eval_shape(initialize_fn)
     # By default, all arrays in the TrainState are replicated.
-    sharding = maps.NamedSharding(mesh, PartitionSpec())
+    sharding = jax.sharding.NamedSharding(mesh, PartitionSpec())
     train_state = jax.tree_util.tree_map(
         lambda x: jax.ShapeDtypeStruct(x.shape, x.dtype, sharding=sharding),
         train_state)
@@ -102,7 +101,7 @@ class CreateOrReuseTrainStateTest(parameterized.TestCase):
         'foo': jax.ShapeDtypeStruct(
             shape=train_state.params['foo'].shape,
             dtype=train_state.params['foo'].dtype,
-            sharding=maps.NamedSharding(mesh, partition_spec)),
+            sharding=jax.sharding.NamedSharding(mesh, partition_spec)),
         'bar': bar})
     # Call create_or_reuse_train_state, which should create a new value for
     # 'foo' and keep the previous value for 'bar'.
@@ -194,7 +193,7 @@ class InitializeTrainStateFromCheckpointTest(absltest.TestCase):
   def test_initialize_from_vmoe(
       self, mock_initialize_from_vmoe):
     train_state = mock.create_autospec(trainer.TrainState, instance=True)
-    mesh = mock.create_autospec(maps.Mesh, instance=True)
+    mesh = mock.create_autospec(jax.sharding.Mesh, instance=True)
     _ = trainer.initialize_train_state_from_checkpoint(
         train_state=train_state, name='initialize_from_vmoe', mesh=mesh,
         prefix='/foo', rules=[])
@@ -208,7 +207,7 @@ class InitializeTrainStateFromCheckpointTest(absltest.TestCase):
   def test_initialize_from_vit(
       self, mock_initialize_from_vit):
     train_state = mock.create_autospec(trainer.TrainState, instance=True)
-    mesh = mock.create_autospec(maps.Mesh, instance=True)
+    mesh = mock.create_autospec(jax.sharding.Mesh, instance=True)
     _ = trainer.initialize_train_state_from_checkpoint(
         train_state=train_state, name='initialize_from_vit', mesh=mesh,
         filepath='/foo', rules=[])
@@ -217,7 +216,7 @@ class InitializeTrainStateFromCheckpointTest(absltest.TestCase):
 
   def test_unknown_method_raises(self):
     train_state = mock.create_autospec(trainer.TrainState, instance=True)
-    mesh = mock.create_autospec(maps.Mesh, instance=True)
+    mesh = mock.create_autospec(jax.sharding.Mesh, instance=True)
     with self.assertRaisesRegex(ValueError, 'Unknown initialization method'):
       trainer.initialize_train_state_from_checkpoint(
           train_state=train_state, name='foo', mesh=mesh)
@@ -382,7 +381,7 @@ class RestoreOrCreateTrainStateTest(absltest.TestCase):
       # Create "empty" train state, containing only the expected shape and
       # sharding of the arrays.
       train_state = jax.eval_shape(self.initialize_fn)
-      sharding = maps.NamedSharding(self.mesh, PartitionSpec())
+      sharding = jax.sharding.NamedSharding(self.mesh, PartitionSpec())
       train_state = jax.tree_util.tree_map(
           lambda x: jax.ShapeDtypeStruct(x.shape, x.dtype, sharding=sharding),
           train_state)

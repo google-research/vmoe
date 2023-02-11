@@ -20,7 +20,6 @@ from absl import logging
 import flax.core
 import flax.traverse_util
 import jax
-from jax.experimental import maps
 import jax.numpy as jnp
 import ml_collections
 import optax
@@ -157,7 +156,7 @@ def restore_from_config(
       tree=variables_shape,
       axis_resources_regexes=config.params_axis_resources)
   variables_axis_resources = jax.tree_util.tree_map(
-      lambda s: maps.NamedSharding(mesh, s), variables_axis_resources)
+      lambda s: jax.sharding.NamedSharding(mesh, s), variables_axis_resources)
   variables_shape = jax.tree_util.tree_map(
       lambda x, s: jax.ShapeDtypeStruct(x.shape, x.dtype, sharding=s),
       variables_shape, variables_axis_resources)

@@ -15,7 +15,6 @@
 from absl.testing import absltest
 from absl.testing import parameterized
 import jax
-from jax.experimental import maps
 from jax.experimental import pjit
 import jax.numpy as jnp
 import numpy as np
@@ -30,13 +29,16 @@ class VitZoomTest(parameterized.TestCase):
   def setUp(self):
     super().setUp()
     # Mesh used with pjit.
-    self.mesh = maps.Mesh(np.asarray(jax.devices()), ('d',))
+    self.mesh = jax.sharding.Mesh(np.asarray(jax.devices()), ('d',))
 
   def wrap_fn(self, fn, use_pjit):
     if use_pjit:
       return self.mesh(
           pjit.pjit(
-              fn, in_axis_resources=(), out_axis_resources=pjit.PartitionSpec())
+              fn,
+              in_axis_resources=(),
+              out_axis_resources=jax.sharding.PartitionSpec(),
+          )
       )
     else:
       return jax.jit(fn)
