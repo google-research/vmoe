@@ -28,7 +28,6 @@ import flax.serialization
 import flax.training.train_state
 import flax.traverse_util
 import jax
-from jax._src import sharding
 from jax.experimental import maps
 from jax.experimental import pjit
 import jax.numpy as jnp
@@ -58,7 +57,7 @@ ArraySpecDict = input_pipeline.ArraySpecDict
 AsyncResult = multiprocessing.pool.AsyncResult
 DatasetIterator = input_pipeline.DatasetIterator
 Mesh = partitioning.Mesh
-NamedSharding = sharding.NamedSharding
+NamedSharding = jax.sharding.NamedSharding
 PartitionSpec = partitioning.PartitionSpec
 PeriodicCheckpointSaver = checkpoints_periodic_actions.PeriodicSaveCheckpoint
 PRNGKey = Union[jax.numpy.ndarray, jax.random.KeyArray]
@@ -322,7 +321,9 @@ def restore_or_create_train_state(
       tree=train_state_shape_dtype,
       axis_resources_regexes=axis_resources_regexes)
   train_state_axis_resources = jax.tree_util.tree_map(
-      lambda spec: pjit.NamedSharding(mesh, spec), train_state_axis_resources)
+      lambda spec: jax.sharding.NamedSharding(mesh, spec),
+      train_state_axis_resources,
+  )
   train_state = jax.tree_util.tree_map(
       lambda x, y: jax.ShapeDtypeStruct(x.shape, x.dtype, sharding=y),
       train_state_shape_dtype, train_state_axis_resources)
