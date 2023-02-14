@@ -20,7 +20,7 @@ from typing import Any, Callable, Dict, Iterable, Mapping, Optional, Sequence
 import cachetools
 from clu import metric_writers
 from clu import periodic_actions
-import clu.data
+from clu.data import dataset_iterator
 import flax.core
 import flax.struct
 import jax
@@ -31,7 +31,7 @@ from vmoe.data import input_pipeline
 from vmoe.data import pjit_utils
 
 Array = jnp.ndarray
-DatasetIterator = clu.data.DatasetIterator
+DatasetIterator = dataset_iterator.DatasetIterator
 EvalStepPjitFn = Callable[['EvalState', 'PyTree', Array, Array, Array],
                           'EvalState']
 PartitionSpec = jax.sharding.PartitionSpec
