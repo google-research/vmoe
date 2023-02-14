@@ -142,7 +142,8 @@ def run_pgd_attack(config: ml_collections.ConfigDict, workdir: str):
   state_axis_resources = jax.tree_map(lambda _: PartitionSpec(),
                                       jax.eval_shape(init_state))
   init_state_pjit = pjit.pjit(
-      init_state, in_axis_resources=(), out_axis_resources=state_axis_resources)
+      init_state, in_shardings=(), out_shardings=state_axis_resources
+  )
 
   def stateful_attack(variables, state, x, y, valid):
 
@@ -166,23 +167,24 @@ def run_pgd_attack(config: ml_collections.ConfigDict, workdir: str):
   # Wrap pgd_attack function with pjit.
   stateful_attack_pjit = pjit.pjit(
       fun=stateful_attack,
-      in_axis_resources=(
+      in_shardings=(
           variables_axis_resources,  # variables.
-          state_axis_resources,      # input state.
-          data_axis_resources,       # input images.
-          data_axis_resources,       # true labels.
-          data_axis_resources,       # valid mask.
+          state_axis_resources,  # input state.
+          data_axis_resources,  # input images.
+          data_axis_resources,  # true labels.
+          data_axis_resources,  # valid mask.
       ),
-      out_axis_resources=(
+      out_shardings=(
           state_axis_resources,  # output state
-          data_axis_resources,   # images after the attack.
-          data_axis_resources,   # loss before the attack.
-          data_axis_resources,   # loss after the attack.
-          data_axis_resources,   # predictions before the attack.
-          data_axis_resources,   # predictions after the attack.
-          data_axis_resources,   # combine weights before the attack.
-          data_axis_resources,   # combine weights after the attack.
-      ))
+          data_axis_resources,  # images after the attack.
+          data_axis_resources,  # loss before the attack.
+          data_axis_resources,  # loss after the attack.
+          data_axis_resources,  # predictions before the attack.
+          data_axis_resources,  # predictions after the attack.
+          data_axis_resources,  # combine weights before the attack.
+          data_axis_resources,  # combine weights after the attack.
+      ),
+  )
   with mesh:
     state = init_state_pjit()
     for step, batch in enumerate(dataset_iter, 1):

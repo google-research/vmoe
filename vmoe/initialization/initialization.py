@@ -76,8 +76,9 @@ def initialize_from_vit(
     axis_resources = partitioning.tree_axis_resources_from_regexes(
         tree=ckpt, axis_resources_regexes=axis_resources_regexes)
   with mesh:
-    ckpt = pjit.pjit(fun=lambda x: x, in_axis_resources=None,
-                     out_axis_resources=axis_resources)(ckpt)
+    ckpt = pjit.pjit(
+        fun=lambda x: x, in_shardings=None, out_shardings=axis_resources
+    )(ckpt)
   # Map the arrays in the ckpt tree to the target tree.
   return mapping.map_state_dict(ckpt, target, rules, **map_state_dict_kwargs)
 

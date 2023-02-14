@@ -53,8 +53,9 @@ class PrefetchToDevice(parameterized.TestCase):
       # identity function. This is the expected ShardedDeviceArray.
       expected = pjit.pjit(
           fun=lambda x: x,
-          in_axis_resources=(axis_resources,),
-          out_axis_resources=axis_resources)(x)
+          in_shardings=(axis_resources,),
+          out_shardings=axis_resources,
+      )(x)
       # Prefetch data using `prefetch_to_device` and check that the result is
       # the same as explicitly calling pjit with an identity function.
       y = list(pjit_utils.prefetch_to_device(iter([x]), size=1))

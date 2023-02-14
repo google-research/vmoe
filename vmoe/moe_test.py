@@ -464,7 +464,8 @@ class SparseMoeSpmdLayerTest(parameterized.TestCase):
         lambda _: jax.sharding.PartitionSpec(('expert',)),
         jax.eval_shape(init, jax.random.PRNGKey(0)))
     init_pjit = pjit.pjit(
-        init, in_axis_resources=None, out_axis_resources=param_partition_spec)
+        init, in_shardings=None, out_shardings=param_partition_spec
+    )
 
     # Create a devices mesh with the specified number of devices and run the
     # init function on that mesh.
@@ -496,8 +497,9 @@ class SparseMoeSpmdLayerTest(parameterized.TestCase):
     variables = flax.core.freeze({'params': {'p': 1 + np.arange(num_experts)}})
     apply_pjit = pjit.pjit(
         apply,
-        in_axis_resources=(param_partition_spec,),
-        out_axis_resources=data_partition_spec)
+        in_shardings=(param_partition_spec,),
+        out_shardings=data_partition_spec,
+    )
 
     # Create a devices mesh with the specified number of devices and run the
     # apply function on that mesh.
@@ -583,8 +585,9 @@ class SparseMoeSpmdWithAxesLayerTest(parameterized.TestCase):
          nn.partitioning.axis_rules(axis_rules):
       output = pjit.pjit(
           fun=lambda v, x, w: Foo().apply(v, x, w),
-          in_axis_resources=pjit_in_axis_resources,
-          out_axis_resources=pjit_out_axis_resources)(variables, x, w)
+          in_shardings=pjit_in_axis_resources,
+          out_shardings=pjit_out_axis_resources,
+      )(variables, x, w)
     expected_output = np.tile(
         (np.arange(S) + (np.arange(S) // 4 + 1)).reshape(1, S, 1),
         reps=[devices.size, 1, 1]).astype(np.float32)

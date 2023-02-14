@@ -78,8 +78,9 @@ class CreateOrReuseTrainStateTest(parameterized.TestCase):
     with mesh:
       bar = pjit.pjit(
           fun=lambda: jnp.arange(8, dtype=jnp.float32),
-          in_axis_resources=(),
-          out_axis_resources=partition_spec)()
+          in_shardings=(),
+          out_shardings=partition_spec,
+      )()
     # Get the ShapeDtypeStruct of all arrays in the TrainState.
     optimizer_tx = trainer.optimizer.optax.identity()
     def initialize_fn():

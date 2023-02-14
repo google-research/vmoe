@@ -93,8 +93,9 @@ class EvaluatorTest(absltest.TestCase):
           sum_correct=np.zeros((), dtype=np.float32),
           sum_loss=np.zeros((), dtype=np.float32),
           rngs={})
-      eval_state = pjit.pjit(fun=lambda x: x, in_axis_resources=None,
-                             out_axis_resources=None)(eval_state)
+      eval_state = pjit.pjit(
+          fun=lambda x: x, in_shardings=None, out_shardings=None
+      )(eval_state)
       eval_state = evaluator.evaluate_dataset(
           eval_step_pjit=eval_step_pjit,
           eval_state=eval_state,
