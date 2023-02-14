@@ -236,9 +236,7 @@ def create_or_reuse_train_state(
   # previously generated out_axis_resources dict.
   with mesh:
     new_train_state_dict = pjit.pjit(
-        _initialize_fn,
-        in_axis_resources=(),
-        out_axis_resources=out_axis_resources,
+        _initialize_fn, in_shardings=(), out_shardings=out_axis_resources
     )()
   # Replace the ShapeDtypeStruct objects from the input train state with the
   # newly generated arrays.

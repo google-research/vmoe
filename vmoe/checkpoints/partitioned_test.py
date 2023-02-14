@@ -339,8 +339,7 @@ class SaveCheckpointTest(parameterized.TestCase):
       }
 
     with Mesh(np.asarray(jax.devices()), 'd'):
-      return pjit.pjit(
-          fn, in_axis_resources=(), out_axis_resources=axis_resources)()
+      return pjit.pjit(fn, in_shardings=(), out_shardings=axis_resources)()
 
   @classmethod
   def _read_index(cls, filepath):
@@ -407,8 +406,10 @@ class SaveAndRestoreTest(absltest.TestCase):
 
     with Mesh(np.asarray(jax.devices()), 'd'):
       return pjit.pjit(
-          fn, in_axis_resources=(), out_axis_resources={
-              'x': axis_resources, 'y': PartitionSpec()})()
+          fn,
+          in_shardings=(),
+          out_shardings={'x': axis_resources, 'y': PartitionSpec()},
+      )()
 
   @classmethod
   def _create_sharding(cls, axis_resources):

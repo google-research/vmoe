@@ -35,9 +35,7 @@ class VitZoomTest(parameterized.TestCase):
     if use_pjit:
       return self.mesh(
           pjit.pjit(
-              fn,
-              in_axis_resources=(),
-              out_axis_resources=jax.sharding.PartitionSpec(),
+              fn, in_shardings=(), out_shardings=jax.sharding.PartitionSpec()
           )
       )
     else:

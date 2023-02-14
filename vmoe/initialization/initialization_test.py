@@ -80,8 +80,7 @@ class _BaseInitializeTest(parameterized.TestCase):
     # Expected output values in the expected devices after initialization.
     def to_device(x, s):
       with self.mesh:
-        return pjit.pjit(
-            lambda x: x, in_axis_resources=None, out_axis_resources=s)(x)
+        return pjit.pjit(lambda x: x, in_shardings=None, out_shardings=s)(x)
     self.expected = flax.core.FrozenDict({
         'foo': {
             'A': to_device(self.ckpt['foo']['a'],
@@ -150,8 +149,8 @@ class _BaseInitializeFromVmoeTest(_BaseInitializeTest):
     })
     with self.mesh:
       self.ckpt = pjit.pjit(
-          lambda x: x, in_axis_resources=None,
-          out_axis_resources=axis_resources)(self.ckpt)
+          lambda x: x, in_shardings=None, out_shardings=axis_resources
+      )(self.ckpt)
 
 
 class InitializeFromVmoeV1Test(_BaseInitializeFromVmoeTest):
