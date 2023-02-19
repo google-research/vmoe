@@ -95,7 +95,9 @@ def savez_compressed(filepath: str, **data):
     fp.write(buffer.getvalue())
 
 
-def run_pgd_attack(config: ml_collections.ConfigDict, workdir: str):
+def run_pgd_attack(
+    config: ml_collections.ConfigDict, workdir: str, mesh: Mesh,
+    writer: metric_writers.MetricWriter):
   """Run PGD attack on an entire dataset, using a model from an XM experiment."""
   # Setup dataset and get the global shape of the image array.
   dataset = get_dataset(config.dataset)
@@ -213,8 +215,6 @@ def run_pgd_attack(config: ml_collections.ConfigDict, workdir: str):
                      sum_loss=state.sum_loss,
                      **{f'sum_iou_experts/{k}': v
                         for k, v in state.sum_iou_experts.items()})
-  writer = metric_writers.create_default_writer(
-      logdir=workdir, just_logging=jax.process_index() > 0)
   with metric_writers.ensure_flushes(writer):
     with jax.spmd_mode('allow_all'):
       # Statistics before the adversarial attack.

@@ -21,7 +21,7 @@ import chex
 import flax.core
 import flax.linen as nn
 import jax
-import jax.experimental.pjit as pjit
+from jax.experimental import pjit
 import jax.numpy as jnp
 import numpy as np
 from vmoe import moe

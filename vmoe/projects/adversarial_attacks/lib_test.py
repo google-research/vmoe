@@ -65,7 +65,8 @@ def _create_model_with_routing(batch_size: int, image_size: int):
                                           variables)
   router_keys = {'router/__call__'}
   loss_fn = lambda a, b, _: optax.softmax_cross_entropy(a, b)
-  return flax_module, variables, variables_axis_resources, loss_fn, router_keys, {}
+  return (flax_module, variables, variables_axis_resources, loss_fn,
+          router_keys, {})
 
 
 def _create_model_without_routing(batch_size: int, image_size: int):
@@ -152,7 +153,10 @@ class RunPGDAttackTest(parameterized.TestCase):
         'attack_auxiliary_loss': False,
     })
     workdir = self.create_tempdir().full_path
-    lib.run_pgd_attack(config, workdir)
+    mesh = jax.sharding.Mesh(np.asarray(jax.local_devices()).reshape((-1, 1)),
+                             ('expert', 'replica'))
+    with mesh:
+      lib.run_pgd_attack(config, workdir, mesh, writer=mock.MagicMock())
     with io.open(os.path.join(workdir, 'pgd_state.npz'), 'rb') as fp:
       pgd_state = dict(np.load(fp))
     self.assertEqual(
