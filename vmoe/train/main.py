@@ -12,9 +12,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Main script."""
+"""Main training script."""
 from vmoe import app
-from vmoe.projects.adversarial_attacks import lib
+from vmoe.train import trainer
 
 if __name__ == '__main__':
-  app.run(lib.run_pgd_attack)
+  app.run(trainer.train_and_evaluate)

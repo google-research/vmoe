@@ -12,17 +12,35 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Main script."""
-from typing import Sequence
+"""Generic entry point for V-MoE projects that require their own main script.
+
+This provides run() which performs some initialization and then calls the
+provided main with the ConfigDict, the working directory, a JAX sharding Mesh,
+and a CLU MetricWriter. We expect each project to have its own main.py.
+
+Usage in your main.py:
+  from vmoe import app
+
+  def main(config: ml_collections.ConfigDict,
+           workdir: str,
+           mesh: jax.sharding.Mesh,
+           writer: metric_writers.MetricWriter):
+    # ...
+
+  if __name__ == '__main__':
+    app.run(main)
+"""
+import functools
 
 from absl import app
 from absl import flags
 from absl import logging
+from clu import metric_writers
 from clu import platform
 import jax
 from ml_collections import config_flags
 import tensorflow as tf
-from vmoe.train import trainer
+from vmoe import partitioning
 
 flags.DEFINE_string('workdir', None, 'Directory to store logs and model data.')
 config_flags.DEFINE_config_file(
@@ -34,13 +52,17 @@ flags.mark_flags_as_required(['config', 'workdir'])
 FLAGS = flags.FLAGS
 
 
-def main(argv: Sequence[str]) -> None:
-  if len(argv) > 1:
-    raise app.UsageError('Too many command-line arguments.')
+def run(main):
+  jax.config.config_with_absl()
+  app.run(functools.partial(_main, main=main))
 
+
+def _main(argv, *, main) -> None:
+  """Runs the `main` method after some initial setup."""
+  del argv
   # Hide any GPUs form TensorFlow. Otherwise TF might reserve memory and make
   # it unavailable to JAX.
-  tf.config.experimental.set_visible_devices([], 'GPU')
+  tf.config.set_visible_devices([], 'GPU')
   # Log JAX compilation steps.
   jax.config.update('jax_log_compiles', True)
   jax.config.update('jax_default_prng_impl', 'unsafe_rbg')
@@ -63,14 +85,12 @@ def main(argv: Sequence[str]) -> None:
                                        f'process_count: {jax.process_count()}')
   platform.work_unit().create_artifact(platform.ArtifactType.DIRECTORY,
                                        FLAGS.workdir, 'workdir')
-  # Select which mode to run.
-  mode = FLAGS.config.get('mode', 'train')
-  if mode == 'train':
-    trainer.train_and_evaluate(config=FLAGS.config, workdir=FLAGS.workdir)
-  else:
-    raise ValueError(f'Unknown mode: {FLAGS.config.mode!r}')
-
-
-if __name__ == '__main__':
-  jax.config.config_with_absl()
-  app.run(main)
+  # CLU metric writer.
+  writer = metric_writers.create_default_writer(
+      logdir=FLAGS.workdir, just_logging=jax.process_index() > 0)
+  # Set logical device mesh globally.
+  mesh = partitioning.get_auto_logical_mesh(FLAGS.config.num_expert_partitions,
+                                            jax.devices())
+  partitioning.log_logical_mesh(mesh)
+  with mesh:
+    main(FLAGS.config, FLAGS.workdir, mesh, writer)

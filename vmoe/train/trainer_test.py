@@ -31,8 +31,9 @@ import tensorflow as tf
 from vmoe.train import trainer
 
 
-PartitionSpec = trainer.PartitionSpec
-Mesh = trainer.Mesh
+PartitionSpec = jax.sharding.PartitionSpec
+Mesh = jax.sharding.Mesh
+MetricWriter = trainer.metric_writers.MetricWriter
 VALID_KEY = trainer.input_pipeline.VALID_KEY
 
 
@@ -453,14 +454,12 @@ class TrainAndEvaluateTest(parameterized.TestCase):
       ('_standard', {}),
       ('_mixup', {'concentration': 0.2}),
   )
-  @mock.patch.object(trainer.metric_writers, 'create_default_writer')
   @mock.patch.object(trainer, 'create_flax_model')
   @mock.patch.object(trainer.input_pipeline, 'get_data_num_examples',
                      return_value=32)
   @mock.patch.object(trainer.input_pipeline, 'get_datasets')
   def test(self, mixup_config, mock_get_datasets,
-           unused_mock_get_data_num_examples, mock_create_flax_model,
-           mock_create_default_writer):
+           unused_mock_get_data_num_examples, mock_create_flax_model):
     config = ml_collections.ConfigDict()
     config.dataset = ml_collections.ConfigDict()
     config.dataset.train = ml_collections.ConfigDict()
@@ -490,9 +489,52 @@ class TrainAndEvaluateTest(parameterized.TestCase):
         'eval': self.create_dataset_eval(),
     }
     mock_create_flax_model.return_value = self.create_flax_model()
-    mock_create_default_writer.return_value = mock.MagicMock()
-    trainer.train_and_evaluate(config=config, workdir=workdir)
+    writer = mock.create_autospec(MetricWriter, instance=True)
+    mesh = jax.sharding.Mesh(np.asarray(jax.local_devices()).reshape((-1, 1)),
+                             ('expert', 'replica'))
+    with mesh:
+      trainer.train_and_evaluate(config, workdir, mesh, writer)
 
+  @mock.patch.object(trainer, 'create_flax_model')
+  @mock.patch.object(trainer.input_pipeline, 'get_data_num_examples',
+                     return_value=32)
+  @mock.patch.object(trainer.input_pipeline, 'get_datasets')
+  @mock.patch.object(trainer.fewshot, '_get_datasets')
+  def test_fewshot(self, mock_fewshot_get_datasets, mock_get_datasets,
+                   unused_mock_get_data_num_examples, mock_create_flax_model):
+    config = ml_collections.ConfigDict()
+    config.dataset = ml_collections.ConfigDict()
+    config.dataset.train = ml_collections.ConfigDict()
+    config.dataset.train.batch_size = 16
+    config.train_epochs = 2
+    config.num_expert_partitions = jax.local_device_count()
+    config.params_axis_resources = [('.*/v$', 'expert')]
+    config.model = ml_collections.ConfigDict()
+    config.model_eval_overrides = ml_collections.ConfigDict()
+    config.optimizer = ml_collections.ConfigDict()
+    config.optimizer.name = 'sgd'
+    config.optimizer.learning_rate = 1e-3
+    config.optimizer.momentum = 0.9
+    config.loss = ml_collections.ConfigDict()
+    config.loss.name = 'softmax_xent'
+    config.fewshot = ml_collections.ConfigDict()
+    config.fewshot.datasets = {'foo': ('tfds_name', 'train', 'test')}
+    config.fewshot.shots = [5]
+    config.fewshot.l2_regs = [0.01]
+    workdir = self.create_tempdir().full_path
+    mock_get_datasets.return_value = {
+        'train': self.create_dataset_train(),
+    }
+    mock_fewshot_get_datasets.return_value = {
+        'foo':
+            (self.create_dataset_fewshot(), self.create_dataset_fewshot(), 10)
+    }
+    mock_create_flax_model.return_value = self.create_flax_model()
+    writer = mock.create_autospec(MetricWriter, instance=True)
+    mesh = jax.sharding.Mesh(np.asarray(jax.local_devices()).reshape((-1, 1)),
+                             ('expert', 'replica'))
+    with mesh:
+      trainer.train_and_evaluate(config, workdir, mesh, writer)
 
   @mock.patch.object(trainer.input_pipeline, 'get_datasets')
   def test_missing_train_dataset(self, mock_get_datasets):
@@ -501,8 +543,12 @@ class TrainAndEvaluateTest(parameterized.TestCase):
     config.dataset = ml_collections.ConfigDict()
     workdir = self.create_tempdir().full_path
     mock_get_datasets.return_value = {}
+    writer = mock.create_autospec(MetricWriter, instance=True)
+    mesh = jax.sharding.Mesh(np.asarray(jax.local_devices()).reshape((-1, 1)),
+                             ('expert', 'replica'))
     with self.assertRaisesRegex(KeyError, 'You must have a "train" variant'):
-      trainer.train_and_evaluate(config=config, workdir=workdir)
+      with mesh:
+        trainer.train_and_evaluate(config, workdir, mesh, writer)
 
 
 class WrapTrainStepWithAdversarialAttackTest(parameterized.TestCase):

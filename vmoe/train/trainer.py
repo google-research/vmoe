@@ -568,17 +568,8 @@ def train_step(
   return state, metrics
 
 
-def train_and_evaluate(config: ml_collections.ConfigDict, workdir: str):
-  # Set logical device mesh globally.
-  mesh = partitioning.get_auto_logical_mesh(config.num_expert_partitions,
-                                            jax.devices())
-  partitioning.log_logical_mesh(mesh)
-  with mesh:
-    return _train_and_evaluate(config, workdir, mesh)
-
-
-def _train_and_evaluate(config: ml_collections.ConfigDict, workdir: str,
-                        mesh: Mesh):
+def train_and_evaluate(config: ml_collections.ConfigDict, workdir: str,
+                       mesh: Mesh, writer: metric_writers.MetricWriter):
   """Trains a model and evaluates it periodically."""
   datasets = input_pipeline.get_datasets(config.dataset)
   if 'train' not in datasets:
@@ -642,9 +633,7 @@ def _train_and_evaluate(config: ml_collections.ConfigDict, workdir: str,
       ),
       donate_argnums=(0, 1, 2))
 
-  # Setup metric writer & hooks.
-  writer = metric_writers.create_default_writer(
-      logdir=workdir, just_logging=jax.process_index() > 0)
+  # Setup hooks.
   profile_hook = create_profile_hook(
       workdir=workdir, **config.get('profile', {}))
   progress_hook = create_progress_hook(
