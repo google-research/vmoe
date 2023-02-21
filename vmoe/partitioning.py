@@ -73,7 +73,7 @@ from jax.experimental import pjit
 import numpy as np
 
 AxisResourcesRegexes = Sequence[Tuple[str, 'UnparsedPartitionSpec']]
-Device = jax.lib.xla_client.Device
+Device = jax.Device
 Mesh = jax.sharding.Mesh
 NamedSharding = jax.sharding.NamedSharding
 PartitionSpec = jax.sharding.PartitionSpec
