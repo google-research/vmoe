@@ -118,7 +118,7 @@ def iterate_complete_steps_for_prefix(
       sorted(steps_and_suffixes - incomplete_steps_and_suffixes,
              reverse=decreasing),
       lambda x: x[0]):
-    if set(x[1] for x in group) == suffixes:
+    if not suffixes.difference(set(x[1] for x in group)):
       yield step
 
 

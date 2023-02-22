@@ -18,6 +18,7 @@ import os
 from typing import Iterable, Optional
 
 from clu import periodic_actions
+from clu.data import dataset_iterator as clu_dataset_iterator
 import jax
 
 from vmoe import multihost_utils
@@ -25,6 +26,7 @@ from vmoe.checkpoints import base as checkpoints_base
 from vmoe.checkpoints import partitioned as checkpoints_partitioned
 
 
+DatasetIterator = clu_dataset_iterator.DatasetIterator
 MapResult = checkpoints_partitioned.MapResult
 PyTree = checkpoints_partitioned.PyTree
 ThreadPool = checkpoints_partitioned.ThreadPool
@@ -172,7 +174,8 @@ class PeriodicSaveCheckpoint(periodic_actions.PeriodicCallback):
                         keep_multiple, execute_async, thread_pool,
                         report_progress, report_progress_name):
 
-    def callback_fn(step: int, t: float, state: PyTree):
+    def callback_fn(step: int, t: float, state: PyTree,
+                    iterator: Optional[DatasetIterator] = None):
       del t  # Unused.
       # Wait up to `wait_seconds` seconds, until the previous checkpoint is
       # completed before starting to write a new checkpoint. If the timeout

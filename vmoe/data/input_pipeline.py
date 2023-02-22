@@ -143,13 +143,12 @@ def get_dataset(
 
 def get_data_num_examples(config: ml_collections.ConfigDict) -> int:
   """Returns the total number of examples of a dataset specified by a config."""
+  config = config.to_dict()
   # These are kwarg keys used when creating the pipeline, not the builder.
   pipeline_keys = ('variant', 'batch_size', 'process', 'cache',
                    'num_parallel_calls', 'prefetch', 'prefetch_device',
                    'shuffle_buffer')
-  builder_kwargs = {
-      k: v for k, v in config.to_dict().items() if k not in pipeline_keys
-  }
+  builder_kwargs = {k: v for k, v in config.items() if k not in pipeline_keys}
   builder = vmoe.data.builder.get_dataset_builder(**builder_kwargs)
   return builder.num_examples
 

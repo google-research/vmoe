@@ -246,6 +246,14 @@ def create_or_reuse_train_state(
       train_state, flax.traverse_util.unflatten_dict(train_state_dict, sep='/'))
 
 
+def get_dataset_iterator(
+    dataset: DatasetIterator, prefetch_size: int, init_step: int, mesh: Mesh,
+    workdir: str):
+  """Creates a dataset iterator with device prefetching."""
+  del init_step, workdir
+  return pjit_utils.prefetch_to_device(dataset, size=prefetch_size, mesh=mesh)
+
+
 def make_create_train_state_fn(
     *,
     model: nn.Module,
@@ -607,6 +615,10 @@ def train_and_evaluate(config: ml_collections.ConfigDict, workdir: str,
       initialization_kwargs=config.get('initialization'))
   init_step = int(train_state.step)
   logging.info('Initial step = %d', init_step)
+  tr_iter = get_dataset_iterator(
+      dataset=datasets['train'],
+      prefetch_size=config.dataset.train.get('prefetch_device', 1),
+      init_step=init_step, mesh=mesh, workdir=workdir)
   train_loss_fn, eval_loss_fn, label_pred_fn = get_loss_fn(**config.loss)
   summarizer = create_tree_summarizer(config.get('summarize_arrays'))
   train_step_fn = functools.partial(
@@ -670,10 +682,6 @@ def train_and_evaluate(config: ml_collections.ConfigDict, workdir: str,
         datataset_element_shape_dtype['labels']).compile()
     t1 = time.time()
     writer.write_scalars(init_step + 1, {'train/compile_secs': t1 - t0})
-    # Create iterator over the train dataset.
-    tr_iter = pjit_utils.prefetch_to_device(
-        iterator=datasets['train'],
-        size=config.dataset.train.get('prefetch_device'))
     for step, batch in zip(range(init_step + 1, train_steps + 1), tr_iter):
       profile_hook(step)
       with jax.profiler.StepTraceAnnotation('train', step_num=step):
@@ -681,7 +689,7 @@ def train_and_evaluate(config: ml_collections.ConfigDict, workdir: str,
                                                batch['labels'])
       progress_hook(
           step, scalar_metrics={f'train/{k}': v for k, v in metrics.items()})
-      checkpoint_hook(step, state=train_state)
+      checkpoint_hook(step, state=train_state, iterator=tr_iter)
       evaluation_hook(step, params=train_state.params)
       fewshot_hook(step, variables={'params': train_state.params})
   multihost_utils.sync_devices('training:completed')
