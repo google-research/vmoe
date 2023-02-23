@@ -41,7 +41,7 @@ from typing import Any, Dict, Iterator, List, Optional, Sequence, Tuple
 
 from absl import logging
 import jax
-from jax._src.array import Shard
+from jax import Shard
 import numpy as np
 from vmoe import multihost_utils
 from vmoe import utils
