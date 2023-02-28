@@ -85,7 +85,7 @@ class EvaluatorTest(absltest.TestCase):
         apply_fn=self._apply_fn,
         loss_fn=self._loss_fn,
         label_pred_fn=self._label_pred_fn,
-        rng_keys=[])
+        out_shardings=None)
     # Run the evaluation.
     with Mesh(np.asarray(jax.local_devices()), ('d',)):
       eval_state = evaluator.EvalState(

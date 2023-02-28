@@ -24,6 +24,7 @@ from clu.data import dataset_iterator
 import flax.core
 import flax.struct
 import jax
+from jax.experimental import maps
 from jax.experimental import pjit
 import jax.numpy as jnp
 from vmoe import utils
@@ -38,6 +39,8 @@ PartitionSpec = jax.sharding.PartitionSpec
 PRNGKey = jnp.ndarray
 PyTree = Any
 VALID_KEY = input_pipeline.VALID_KEY
+
+tree_map = jax.tree_util.tree_map
 
 
 class EvalState(flax.struct.PyTreeNode):
@@ -135,11 +138,22 @@ class EvaluateMultipleDatasets(periodic_actions.PeriodicCallback):
     # Note: We create the eval_step_pjit here to avoid multiple compilation
     # steps. If the shapes of inputs/outputs for all datasets is the same, this
     # will be only compiled once.
+    eval_state_dtype_struct = EvalState(
+        num=jax.ShapeDtypeStruct(shape=(), dtype=jnp.float32),
+        sum_correct=jax.ShapeDtypeStruct(shape=(), dtype=jnp.float32),
+        sum_loss=jax.ShapeDtypeStruct(shape=(), dtype=jnp.float32),
+        rngs=jax.eval_shape(lambda: utils.make_rngs(rng_keys, 0)))
+    mesh = maps.thread_resources.env.physical_mesh
+    assert not mesh.empty, 'The physical mesh is empty.'
+    sharding = jax.sharding.NamedSharding(mesh, PartitionSpec())
+    eval_state_dtype_struct = tree_map(
+        lambda x: jax.ShapeDtypeStruct(x.shape, x.dtype, sharding=sharding),
+        eval_state_dtype_struct)
     eval_step_pjit = make_eval_step_pjit(
         apply_fn=apply_fn,
         loss_fn=loss_fn,
         label_pred_fn=label_pred_fn,
-        rng_keys=rng_keys)
+        out_shardings=tree_map(lambda x: x.sharding, eval_state_dtype_struct))
 
     @functools.partial(
         pjit.pjit,
@@ -157,14 +171,9 @@ class EvaluateMultipleDatasets(periodic_actions.PeriodicCallback):
     def compile_for_dataset(name, params, train_step):
       # Note: This is not the initial EvalState, this only serves to compile the
       # eval step for a given dataset.
-      eval_state = EvalState(
-          num=jax.ShapeDtypeStruct(shape=(), dtype=jnp.float32),
-          sum_correct=jax.ShapeDtypeStruct(shape=(), dtype=jnp.float32),
-          sum_loss=jax.ShapeDtypeStruct(shape=(), dtype=jnp.float32),
-          rngs=jax.eval_shape(lambda: utils.make_rngs(rng_keys, 0)))
       t0 = time.time()
       eval_step_pjit_ds = eval_step_pjit.lower(
-          eval_state,
+          eval_state_dtype_struct,
           params,
           datasets_element_shape_dtype[name]['image'],
           datasets_element_shape_dtype[name]['labels'],
@@ -245,20 +254,15 @@ def make_eval_step_pjit(
     apply_fn: Callable[..., Any],
     loss_fn: Callable[[Array, Array], Array],
     label_pred_fn: Callable[[Array], Array],
-    rng_keys: Sequence[str],
+    out_shardings: EvalState,
 ) -> EvalStepPjitFn:
   """Create a pjitted function that performs one evaluation step."""
-  eval_state_axis_resources = EvalState(
-      num=PartitionSpec(),
-      sum_correct=PartitionSpec(),
-      sum_loss=PartitionSpec(),
-      rngs={key: PartitionSpec() for key in rng_keys})
   eval_step_pjit = pjit.pjit(
       fun=functools.partial(
           evaluate_step,
           apply_fn=apply_fn,
           loss_fn=loss_fn,
           label_pred_fn=label_pred_fn),
-      out_axis_resources=eval_state_axis_resources,
+      out_shardings=out_shardings,
       donate_argnums=(0, 2, 3, 4))
   return eval_step_pjit
