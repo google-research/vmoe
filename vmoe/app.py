@@ -86,8 +86,9 @@ def _main(argv, *, main) -> None:
   platform.work_unit().create_artifact(platform.ArtifactType.DIRECTORY,
                                        FLAGS.workdir, 'workdir')
   # CLU metric writer.
+  logdir = FLAGS.workdir
   writer = metric_writers.create_default_writer(
-      logdir=FLAGS.workdir, just_logging=jax.process_index() > 0)
+      logdir=logdir, just_logging=jax.process_index() > 0)
   # Set logical device mesh globally.
   mesh = partitioning.get_auto_logical_mesh(FLAGS.config.num_expert_partitions,
                                             jax.devices())
