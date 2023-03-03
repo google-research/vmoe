@@ -114,6 +114,10 @@ class PreprocessOpsTest(tf.test.TestCase):
     self.assertAllClose(output_data['labels'].numpy(),
                         np.asarray([0.8, 0.1, 0.8, 0.8], dtype=np.float32))
 
+  def test_reshape(self):
+    data = {'image': tf.constant(np.zeros((8, 32 * 32 * 3)))}
+    output_data = pp_ops.reshape(new_shape=(8, 32, 32, 3))(data)
+    self.assertAllEqual(output_data['image'].shape, [8, 32, 32, 3])
 
 if __name__ == '__main__':
   tf.test.main()

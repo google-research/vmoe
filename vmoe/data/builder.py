@@ -59,6 +59,7 @@ class TfdsBuilder(DatasetBuilder):
     shuffle_seed: Optional seed for shuffling files.
     shuffle_files: If True, shuffles files to process data in random order.
     try_gcs: If True, tries to download data from TFDS' Google Cloud bucket.
+    ignore_errors: bool, if True, the tf.data.Dataset will ignore all errors.
   """
   name: str
   split: str
@@ -67,6 +68,7 @@ class TfdsBuilder(DatasetBuilder):
   shuffle_files: bool = False
   shuffle_seed: Optional[int] = None
   try_gcs: bool = False
+  ignore_errors: bool = False
 
   @property
   def num_examples(self) -> int:
@@ -81,6 +83,8 @@ class TfdsBuilder(DatasetBuilder):
         decoders={'image': tfds.decode.SkipDecoding()},
         shuffle_files=self.shuffle_files,
         read_config=read_config)
+    if self.ignore_errors:
+      data = data.ignore_errors()
     return data
 
   def get_num_fake_examples(self, batch_size_per_process: int) -> int:
@@ -115,6 +119,8 @@ def _get_num_fake_examples(process_index: int, batch_size_per_process: int,
     cache={},
     key=lambda name, data_dir, *_: cachetools.keys.hashkey(name, data_dir))
 def _get_tfds_builder(name, data_dir, manual_dir, try_gcs):
+  if 'from_directory:' in name:
+    return tfds.builder_from_directory(data_dir)
   data_builder = tfds.builder(name=name, data_dir=data_dir, try_gcs=try_gcs)
   data_builder.download_and_prepare(
       download_config=tfds.download.DownloadConfig(manual_dir=manual_dir))

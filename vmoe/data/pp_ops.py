@@ -311,6 +311,27 @@ def resize_small(smaller_size):
 
 
 @InKeyOutKey()
+def reshape(new_shape):
+  """Reshapes image to a given new shape.
+
+  Args:
+    new_shape: new shape size (h, w, c).
+
+  Returns:
+    A function for reshaping an image.
+
+  """
+
+  def _reshape(image):
+    """Reshapes image to a given size."""
+    dtype = image.dtype
+    image = tf.reshape(image, new_shape)
+    return tf.cast(image, dtype)
+
+  return _reshape
+
+
+@InKeyOutKey()
 def value_range(vmin, vmax, in_min=0, in_max=255.0, clip_values=False):
   """Transforms a [in_min,in_max] image to [vmin,vmax] range.
 
