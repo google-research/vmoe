@@ -28,8 +28,9 @@ K = num_selected_experts. It must be <= num_experts.
 """
 import abc
 import math
-from typing import Any, Callable, Dict, Mapping, Optional, Tuple
+from typing import Any, Callable, Dict, Literal, Mapping, Optional, Tuple
 
+from absl import logging
 import flax.core.lift
 import flax.linen.partitioning
 import flax.linen.transforms
@@ -40,6 +41,7 @@ import vmoe.partitioning
 
 
 Array = jnp.ndarray
+CeilOrRound = Literal["ceil", "round"]
 PartitionSpec = jax.sharding.PartitionSpec
 with_sharding_constraint = vmoe.partitioning.with_sharding_constraint
 _add_axis_to_metadata = flax.linen.partitioning._add_axis_to_metadata  # pylint: disable=protected-access
@@ -225,6 +227,36 @@ class Bfloat16Dispatcher(BaseDispatcher):
     return data.astype(dtype)
 
 
+def compute_capacity(
+    num_tokens: int,
+    num_experts: int,
+    capacity_factor: float,
+    ceil_or_round: CeilOrRound = "ceil",
+    multiple_of: Optional[int] = 4) -> int:
+  """Returns the capacity per expert needed to distribute num_tokens among num_experts."""
+  if ceil_or_round == "ceil":
+    capacity = int(math.ceil(num_tokens * capacity_factor / num_experts))
+  elif ceil_or_round == "round":
+    capacity = int(round(num_tokens * capacity_factor / num_experts))
+  else:
+    raise ValueError(f"Unsupported {ceil_or_round=}")
+  if capacity < 1:
+    raise ValueError(f"The values num_tokens = f{num_tokens}, num_experts = "
+                     f"{num_experts} and capacity_factor = {capacity_factor} "
+                     f"lead to capacity = {capacity}, but it must be greater "
+                     "than or equal to 1.")
+  if multiple_of and multiple_of > 0:
+    # Make capacity multiple of 4 to try to avoid padding.
+    capacity += (-capacity) % multiple_of
+  actual_capacity_factor = capacity * num_experts / num_tokens
+  if abs(actual_capacity_factor - capacity_factor) > 1e-6:
+    logging.warning(
+        "The target capacity_factor is %f, but with num_tokens=%d and "
+        "num_experts=%d the actual capacity_factor is %f.",
+        capacity_factor, num_tokens, num_experts, actual_capacity_factor)
+  return capacity
+
+
 def get_dense_einsum_dispatcher(gates,
                                 **dispatcher_kwargs) -> DenseEinsumDispatcher:
   # The dispatching algorithm is trivial, because all tokens are sent to
@@ -232,12 +264,12 @@ def get_dense_einsum_dispatcher(gates,
   return DenseEinsumDispatcher(combine_weights=gates, **dispatcher_kwargs)
 
 
-def get_top_experts_per_item_dispatcher(gates: Array, name: str,
-                                        num_selected_experts: int,
-                                        batch_priority: bool,
-                                        capacity: Optional[int] = None,
-                                        capacity_factor: Optional[float] = None,
-                                        **dispatcher_kwargs) -> BaseDispatcher:
+def get_top_experts_per_item_dispatcher(
+    gates: Array, name: str, num_selected_experts: int, batch_priority: bool,
+    capacity: Optional[int] = None, capacity_factor: Optional[float] = None,
+    capacity_ceil_or_round: CeilOrRound = "ceil",
+    capacity_multiple_of: Optional[int] = 4,
+    **dispatcher_kwargs) -> BaseDispatcher:
   """Returns a dispatcher implementing Top-Experts-Per-Item routing.
 
   For each item, the `num_selected_experts` experts with the largest gating
@@ -261,6 +293,10 @@ def get_top_experts_per_item_dispatcher(gates: Array, name: str,
       Either this or `capacity_factor` must be given.
     capacity_factor: If given, sets the `capacity` to this factor of S * K / E.
       Either this or `capacity` must be given.
+    capacity_ceil_or_round: Compute the capacity by either ceiling or rounding
+      (default = "ceil").
+    capacity_multiple_of: If given, ensures that the capacity is multiple of
+      this number by increasing it if necessary.
     **dispatcher_kwargs: Additional arguments for the dispatcher object.
 
   Returns:
@@ -273,11 +309,13 @@ def get_top_experts_per_item_dispatcher(gates: Array, name: str,
         f"capacity_factor = {capacity_factor!r}")
   if not capacity:
     group_size, num_experts = gates.shape
-    capacity = _compute_capacity(
+    capacity = compute_capacity(
         # Target number of tokens to split among the `num_experts` experts.
         num_tokens=group_size * num_selected_experts,
         num_experts=num_experts,
-        capacity_factor=capacity_factor)
+        capacity_factor=capacity_factor,
+        ceil_or_round=capacity_ceil_or_round,
+        multiple_of=capacity_multiple_of)
 
   fn_map = {
       "einsum": _get_top_experts_per_item_einsum_dispatcher,
@@ -294,6 +332,8 @@ def get_top_items_per_expert_dispatcher(
     name: str,
     capacity: Optional[int] = None,
     capacity_factor: Optional[float] = None,
+    capacity_ceil_or_round: CeilOrRound = "ceil",
+    capacity_multiple_of: Optional[int] = 4,
     **dispatcher_kwargs) -> Tuple[BaseDispatcher, Dict[str, Array]]:
   """Returns a dispatcher implementing Top-Items-Per-Expert routing.
 
@@ -312,6 +352,10 @@ def get_top_items_per_expert_dispatcher(
       Either this or `capacity_factor` must be given.
     capacity_factor: If given, sets the `capacity` to this factor of S / E.
       Either this or `capacity` must be given.
+    capacity_ceil_or_round: Compute the capacity by either ceiling or rounding
+      (default = "ceil").
+    capacity_multiple_of: If given, ensures that the capacity is multiple of
+      this number by increasing it if necessary.
     **dispatcher_kwargs: Additional arguments for the dispatcher object.
 
   Returns:
@@ -324,11 +368,13 @@ def get_top_items_per_expert_dispatcher(
         f"capacity_factor = {capacity_factor!r}")
   if not capacity:
     group_size, num_experts = gates.shape
-    capacity = _compute_capacity(
+    capacity = compute_capacity(
         # Target number of tokens to split among the `num_experts` experts.
         num_tokens=group_size,
         num_experts=num_experts,
-        capacity_factor=capacity_factor)
+        capacity_factor=capacity_factor,
+        ceil_or_round=capacity_ceil_or_round,
+        multiple_of=capacity_multiple_of)
 
   fn_map = {
       "einsum": _get_top_items_per_expert_einsum_dispatcher,
@@ -430,18 +476,6 @@ def sparse_moe_spmd_with_axes(
 
 def _cast_to_bfloat16(x: Array) -> Array:
   return x.astype(jnp.bfloat16) if jnp.issubdtype(x.dtype, jnp.floating) else x
-
-
-def _compute_capacity(num_tokens, num_experts, capacity_factor):
-  capacity = int(math.ceil(num_tokens * capacity_factor / num_experts))
-  if capacity < 1:
-    raise ValueError(f"The values num_tokens = f{num_tokens}, num_experts = "
-                     f"{num_experts} and capacity_factor = {capacity_factor} "
-                     f"lead to capacity = {capacity}, but it must be greater "
-                     "than or equal to 1.")
-  # Make capacity multiple of 4 to try to avoid padding.
-  capacity += (-capacity) % 4
-  return capacity
 
 
 def _convert_partition_spec(spec):

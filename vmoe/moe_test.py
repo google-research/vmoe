@@ -71,7 +71,7 @@ class DispatcherTest(parameterized.TestCase):
     with self.assertRaisesRegex(
         ValueError, 'The values .* lead to capacity .*, but it must be greater '
         'than or equal to 1'):
-      moe._compute_capacity(128, 32, -1.0)
+      moe.compute_capacity(128, 32, -1.0)
 
   @parameterized.named_parameters(
       ('none', None, None),
