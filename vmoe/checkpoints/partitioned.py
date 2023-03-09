@@ -345,9 +345,7 @@ def _get_array_sharding_or_default(arr: jax.Array) -> Sharding:
   if hasattr(arr, 'sharding'):
     return arr.sharding
   else:
-    op_sharding = jax.xla.xc.OpSharding()
-    op_sharding.type = jax.xla.xc.OpSharding.Type.REPLICATED
-    return OpShardingSharding(jax.devices(), op_sharding)
+    return OpShardingSharding.get_replicated(jax.devices())
 
 
 def _intersect_slicend(a: SliceNd, b: SliceNd) -> Optional[SliceNd]:

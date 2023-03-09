@@ -87,9 +87,7 @@ def get_array_sharding_or_default(arr: jax.Array) -> jax.sharding.Sharding:
   if hasattr(arr, 'sharding'):
     return arr.sharding
   else:
-    op_sharding = jax.xla.xc.OpSharding()
-    op_sharding.type = jax.xla.xc.OpSharding.Type.REPLICATED
-    return jax.sharding.OpShardingSharding(jax.devices(), op_sharding)
+    return jax.sharding.OpShardingSharding.get_replicated(jax.devices())
 
 
 def process_has_contiguous_device_slice(devices: np.ndarray,
