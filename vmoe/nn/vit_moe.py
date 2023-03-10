@@ -13,7 +13,7 @@
 # limitations under the License.
 
 """Module with gating layers."""
-from typing import Any, Iterable, Mapping, Optional, Tuple, Type, Union
+from typing import Any, ClassVar, Iterable, Mapping, Optional, Tuple, Type, Union
 
 import flax.linen as nn
 import jax.numpy as jnp
@@ -215,13 +215,14 @@ class EncoderMoe(nn.Module):
   moe: Optional[KwArgs] = None
   deterministic: bool = False
   dtype: Optional[DType] = None
+  position_emb: Optional[KwArgs] = None
+  # Class variable:
+  DEFAULT_SINCOS2D_TEMPERATURE: ClassVar[float] = 10_000.
 
   @nn.compact
   def __call__(self, inputs):
     assert inputs.ndim == 3, f'Expected ndim = 3, but got shape {inputs.shape}'
-    x = AddPositionEmbs(
-        posemb_init=nn.initializers.normal(stddev=0.02),  # from BERT.
-        name='posembed_input')(inputs)
+    x = self.add_position_emb(inputs)
     x = nn.Dropout(rate=self.dropout_rate, deterministic=self.deterministic)(x)
 
     dense_mlp_params = dict(mlp_dim=self.mlp_dim,
@@ -255,6 +256,48 @@ class EncoderMoe(nn.Module):
         m['auxiliary_loss'] for m in metrics.values())
     return encoded, metrics
 
+  @nn.nowrap
+  def add_position_emb(self, inputs):
+    # By default, for back-compatibility, we use learned positional embeddings.
+    position_emb = self.position_emb or {}
+    name = position_emb.get('name', 'learned')
+    if name == 'learned':
+      return AddPositionEmbs(
+          posemb_init=nn.initializers.normal(stddev=0.02),  # from BERT.
+          name='posembed_input')(inputs)
+    if name == 'sincos2d':
+      _, n, c = inputs.shape
+      h = position_emb['h']
+      w = position_emb['w']
+      # Sincos 2D position embedding like the one used in MoCo v3.
+      # https://arxiv.org/abs/2104.02057
+      if c % 4 != 0 or c < 8:
+        raise ValueError(f'The hidden_size={c} must be multiple of 4 and >= 8.')
+      temperature = position_emb.get('temperature',
+                                     self.DEFAULT_SINCOS2D_TEMPERATURE)
+      y, x = jnp.mgrid[:h, :w].astype(inputs.dtype)
+      y, x = y.flatten(), x.flatten()
+      omega = jnp.arange(c // 4, dtype=inputs.dtype) / (c // 4 - 1)
+      omega = 1. / (temperature**omega)
+      x = jnp.einsum('n,d->nd', x, omega)
+      y = jnp.einsum('n,d->nd', y, omega)
+      # Each of the four arrays sin/cos have shape equal to (n, c//4), we
+      # concatenate the four here along the last axis to get (n, c). Then we
+      # simply sum that array to the inputs array (with broadcasting along the
+      # batch size axis).
+      posembed = jnp.concatenate(
+          [jnp.sin(x), jnp.cos(x), jnp.sin(y), jnp.cos(y)], axis=-1)[None, ...]
+      if n == h * w:
+        return inputs + posembed
+      elif n == h * w + 1:
+        a = inputs[:, :1, :]
+        b = inputs[:, 1:, :] + posembed
+        return jnp.concatenate([a, b], axis=1)
+      else:
+        raise ValueError(
+            f'Unsupported sequence length {n=} for the given {h=} and {w=}.')
+    raise ValueError(f'Unsupported position embedding: {self.position_emb}')
+
 
 class VisionTransformerMoe(nn.Module):
   """Vision Transformer with Sparse MoE layers.
@@ -277,6 +320,13 @@ class VisionTransformerMoe(nn.Module):
     x = nn.Conv(
         features=self.hidden_size, kernel_size=self.patch_size,
         strides=self.patch_size, padding='VALID', name='embedding')(inputs)
+    # sincos2d positional embedding needs the grid size, but the Encoder expects
+    # a flatten sequence, so we must feed that info as part of the kwargs.
+    encoder_kwargs = dict(self.encoder)
+    if encoder_kwargs.get('position_emb', {}).get('name') == 'sincos2d':
+      encoder_kwargs['position_emb'] = dict(encoder_kwargs['position_emb'])
+      encoder_kwargs['position_emb']['h'] = x.shape[1]
+      encoder_kwargs['position_emb']['w'] = x.shape[2]
     # Reshape images into sequences of tokens.
     x = x.reshape(x.shape[0], -1, x.shape[-1])
     # If we want to add a class token, add it here.
@@ -286,7 +336,7 @@ class VisionTransformerMoe(nn.Module):
       x = jnp.concatenate([cls, x], axis=1)
     # Encode tokens unsing the MoE encoder.
     x, metrics = self.encoder_cls(
-        name='Encoder', deterministic=self.deterministic, **self.encoder)(x)
+        name='Encoder', deterministic=self.deterministic, **encoder_kwargs)(x)
     # Get a single vector representation of the full sequence.
     if self.classifier == 'token' or self.classifier == '0':
       x = x[:, 0]

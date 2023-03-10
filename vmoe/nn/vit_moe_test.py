@@ -14,11 +14,13 @@
 
 """Tests for vit_moe."""
 import copy
+import math
 
 from absl.testing import absltest
 from absl.testing import parameterized
 import chex
 import jax
+import jax.numpy as jnp
 from vmoe.nn import vit_moe
 
 # Default configuration for the V-MoE.
@@ -71,23 +73,90 @@ EXPECTED_DEFAULT_MOE_SHAPES = {
 EXPECTED_DEFAULT_LAYER_NORM_SHAPES = {'bias': (8,), 'scale': (8,)}
 
 
+class EncoderMoeTest(parameterized.TestCase):
+
+  def test_position_embedding_learned(self):
+    encoder = vit_moe.EncoderMoe(num_layers=0, mlp_dim=4, num_heads=1)
+    x = jnp.zeros((2, 4, 8), dtype=jnp.float32)
+    pos_embedding = jnp.arange(32).reshape((1, 4, 8))
+    y, _ = encoder.apply({
+        'params': {
+            'posembed_input': {'pos_embedding': pos_embedding},
+            'encoder_norm': {'bias': jnp.zeros(8), 'scale': jnp.ones(8)},
+        },
+    }, x)
+    expected_y = jax.nn.normalize(
+        jnp.concatenate([pos_embedding, pos_embedding]), axis=-1)
+    chex.assert_trees_all_close(y, expected_y)
+
+  @parameterized.named_parameters(
+      ('gap_or_map', 4, [[
+          # sin(x=0), cos(x=0), sin(y=0), cos(y=0)
+          [0, 0, 1, 1, 0, 0, 1, 1],
+          # sin(x=1), cos(x=1), sin(y=0), cos(y=0)
+          [math.sin(1), math.sin(1), math.cos(1), math.cos(1), 0, 0, 1, 1],
+          # sin(x=0), cos(x=0), sin(y=1), cos(y=1)
+          [0, 0, 1, 1, math.sin(1), math.sin(1), math.cos(1), math.cos(1)],
+          # sin(x=1), cos(x=1), sin(y=1), cos(y=1)
+          [math.sin(1), math.sin(1), math.cos(1), math.cos(1),
+           math.sin(1), math.sin(1), math.cos(1), math.cos(1)],
+      ]]),
+      ('token', 4 + 1, [[
+          [0, 0, 0, 0, 0, 0, 0, 0],
+          # sin(x=0), cos(x=0), sin(y=0), cos(y=0)
+          [0, 0, 1, 1, 0, 0, 1, 1],
+          # sin(x=1), cos(x=1), sin(y=0), cos(y=0)
+          [math.sin(1), math.sin(1), math.cos(1), math.cos(1), 0, 0, 1, 1],
+          # sin(x=0), cos(x=0), sin(y=1), cos(y=1)
+          [0, 0, 1, 1, math.sin(1), math.sin(1), math.cos(1), math.cos(1)],
+          # sin(x=1), cos(x=1), sin(y=1), cos(y=1)
+          [math.sin(1), math.sin(1), math.cos(1), math.cos(1),
+           math.sin(1), math.sin(1), math.cos(1), math.cos(1)],
+      ]]),
+  )
+  def test_position_embedding_sincos2d(self, seq_len, pos_embedding):
+    encoder = vit_moe.EncoderMoe(
+        num_layers=0, mlp_dim=4, num_heads=1,
+        position_emb={'name': 'sincos2d', 'h': 2, 'w': 2, 'temperature': 1.})
+    x = jnp.zeros((2, seq_len, 8), dtype=jnp.float32)
+    y, _ = encoder.apply({
+        'params': {'encoder_norm': {'bias': jnp.zeros(8), 'scale': jnp.ones(8)}}
+    }, x)
+    pos_embedding = jnp.asarray(pos_embedding)
+    expected_y = jax.nn.normalize(
+        jnp.concatenate([pos_embedding, pos_embedding]), axis=-1)
+    chex.assert_trees_all_close(y, expected_y, rtol=1e-3)
+
+  def test_position_embedding_sincos2d_raises(self):
+    encoder = vit_moe.EncoderMoe(
+        num_layers=0, mlp_dim=4, num_heads=1,
+        position_emb={'name': 'sincos2d', 'h': 2, 'w': 2, 'temperature': 1.})
+    x = jnp.zeros((2, 4 + 2, 8), dtype=jnp.float32)
+    with self.assertRaisesRegex(ValueError, 'Unsupported sequence length'):
+      encoder.init(jax.random.PRNGKey(0), x)
+
+
 class VitMoeTest(parameterized.TestCase):
 
-  def test_initialize_shapes(self):
+  @parameterized.named_parameters(
+      ('posemb_learned', {}),
+      ('posemb_sincos2d', {'name': 'sincos2d'}),
+  )
+  def test_initialize_shapes(self, position_emb_kwargs):
     """Tests that the shapes of the parameters are the expected ones."""
-    def init(rngs, x):
-      model = vit_moe.VisionTransformerMoe(**DEFAULT_TEST_CONFIG)
+    def init():
+      config = copy.deepcopy(DEFAULT_TEST_CONFIG)
+      config['encoder']['position_emb'] = position_emb_kwargs
+      model = vit_moe.VisionTransformerMoe(**config)
+      rngs = dict(params=jax.random.PRNGKey(0), gating=jax.random.PRNGKey(1))
+      x = jax.random.normal(jax.random.PRNGKey(0), (16, 4, 4, 3))
       return model.init(rngs, x)
 
-    rngs = dict(params=jax.random.PRNGKey(0), gating=jax.random.PRNGKey(1))
-    x = jax.random.normal(jax.random.PRNGKey(0), (16, 4, 4, 3))
-    shapes = jax.tree_map(lambda x: x.shape, jax.eval_shape(init, rngs, x))
-    shapes = shapes.unfreeze()
+    shapes = jax.tree_map(lambda x: x.shape, jax.eval_shape(init)).unfreeze()
     expected_shapes = {
         'params': {
             'Encoder': {
                 'encoder_norm': EXPECTED_DEFAULT_LAYER_NORM_SHAPES,
-                'posembed_input': {'pos_embedding': (1, 4, 8)},
                 'encoderblock_0': {
                     'LayerNorm_0': EXPECTED_DEFAULT_LAYER_NORM_SHAPES,
                     'LayerNorm_1': EXPECTED_DEFAULT_LAYER_NORM_SHAPES,
@@ -108,6 +177,10 @@ class VitMoeTest(parameterized.TestCase):
             'head': {'bias': (4,), 'kernel': (8, 4)},
         }
     }
+    if not position_emb_kwargs:
+      expected_shapes['params']['Encoder']['posembed_input'] = {
+          'pos_embedding': (1, 4, 8),
+      }
     self.assertDictEqual(shapes, expected_shapes)
 
   def test_forward(self):
