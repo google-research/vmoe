@@ -289,7 +289,7 @@ def _create_map_slicend_to_array_shards(
 def _create_map_slicend_to_checkpoint_shard(
     slicend_to_shards: Dict[SliceNd, List[Shard]],
     itemsize: int,
-    bytes_per_shard: List[int],
+    bytes_per_ckpt_shard: List[int],
 ) -> Dict[SliceNd, int]:
   """Returns a mapping from SliceNd to the checkpoint shard storing them.
 
@@ -300,29 +300,30 @@ def _create_map_slicend_to_checkpoint_shard(
     slicend_to_shards: Dict mapping from SliceNd to the corresponding list of
       JAX array Shards.
     itemsize: Size (in bytes) of each chunk element.
-    bytes_per_shard: List containing the number of bytes that each shard holds.
-      This list is updated according to the selected shard for each index.
+    bytes_per_ckpt_shard: List containing the number of bytes that each
+      checkpoint shard holds.
+      This list is updated according to the selected checkpoint shard for each
+      index.
 
   Returns:
     A dict mapping from Index to an integer, representing the id of the
     checkpoint shard in which it will be stored.
   """
-  num_shards = len(bytes_per_shard)
-  process_count = jax.process_count()
   slicend_to_ckpt_shard = {}
-  for slicend, shards in slicend_to_shards.items():
-    # For each array chunk (slicend), find all the processes that hold it
-    # (there could be many if an array is replicated). The chunk will be written
-    # to the checkpoint shard will less assigned bytes of one of the processes
-    # that hold that chunk.
-    processes = [s.device.process_index for s in shards]
-    shards = [list(range(pid, num_shards, process_count)) for pid in processes]
-    shards = sum(shards, [])
-    ckpt_shard = sorted(shards, key=lambda s: (bytes_per_shard[s], s))[0]
+  for slicend in sorted(slicend_to_shards):
+    # Array shards that contain the current Slice.
+    shards = slicend_to_shards[slicend]
+    # Processes that hold each of the Array shards, sorted by process_index.
+    processes = tuple(sorted(set([s.device.process_index for s in shards])))
+    # Find the smallest checkpoint shard handled by one of the processes holding
+    # the SliceNd.
+    ckpt_shard = _find_smallest_ckpt_shard(bytes_per_ckpt_shard, processes)
+    # The current SliceNd will be stored in the selected checkpoint shard (and
+    # written by the corresponding process).
     slicend_to_ckpt_shard[slicend] = ckpt_shard
-    # Update the number of bytes written to the selected shard.
+    # Update the number of bytes written to the selected checkpoint shard.
     size = np.prod(tuple(s.stop - s.start for s in slicend)) * itemsize
-    bytes_per_shard[ckpt_shard] += size
+    bytes_per_ckpt_shard[ckpt_shard] += size
   return slicend_to_ckpt_shard
 
 
@@ -339,6 +340,20 @@ def _find_ckpt_shards_to_restore(
       if (global_slice == ckpt_slice or  # account for scalar with shape ().
           _intersect_slicend(global_slice, ckpt_slice)):
         yield ckpt_shard
+
+
+def _find_smallest_ckpt_shard(
+    bytes_per_ckpt_shard: List[int], processes: Tuple[int, ...]) -> int:
+  """Returns the smallest checkpoint shard, handled by one of the given processes."""
+  # Sort checkpoint shards by their size, in increasing order.
+  bytes_per_ckpt_shard = [(b, i) for i, b in enumerate(bytes_per_ckpt_shard)]
+  bytes_per_ckpt_shard = sorted(bytes_per_ckpt_shard)
+  # The i-th ckpt shard is handled by the process index = i % process_count.
+  # From the previous sorted bytes_per_ckpt_shard, ignore all shards that aren't
+  # handled by one of the given processes.
+  return [
+      i for _, i in bytes_per_ckpt_shard
+      if i % jax.process_count() in processes][0]
 
 
 def _get_array_sharding_or_default(arr: jax.Array) -> Sharding:
