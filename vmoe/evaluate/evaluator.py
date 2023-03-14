@@ -192,7 +192,7 @@ class EvaluateMultipleDatasets(periodic_actions.PeriodicCallback):
         # since it's updated in the EvalState (see evaluate_step).
         eval_state = jax.tree_util.tree_map(lambda x: x.block_until_ready(),
                                             make_eval_state_pjit(seed))
-        ds_iter = pjit_utils.prefetch_to_device(iter(dataset), size=0)
+        ds_iter = get_dataset_iterator(dataset, mesh)
         t0 = time.time()
         eval_state = evaluate_dataset(eval_step_pjit=eval_step_pjit_ds,
                                       eval_state=eval_state,
@@ -248,6 +248,11 @@ def evaluate_step(
              jax.nn.one_hot(label_pred_fn(logits), labels.shape[1]))
   num_valid = jnp.sum(valid, dtype=jnp.float32)
   return state.update(num_valid, correct, loss, next_rngs)
+
+
+def get_dataset_iterator(dataset: DatasetIterator, mesh: jax.sharding.Mesh):
+  """Creates a dataset iterator with device prefetching."""
+  return pjit_utils.prefetch_to_device(iter(dataset), size=0, mesh=mesh)
 
 
 def make_eval_step_pjit(
