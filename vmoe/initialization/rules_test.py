@@ -24,6 +24,46 @@ jax.config.update('experimental_xmap_spmd_lowering', True)
 jax.config.update('experimental_xmap_spmd_lowering_manual', True)
 
 
+class ZoomTest(parameterized.TestCase):
+
+  def setUp(self):
+    super().setUp()
+    self.mesh = jax.sharding.Mesh(np.asarray(jax.devices()), ('d',))
+
+  def wrap_fn(self, fn, use_pjit):
+    if use_pjit:
+      return self.mesh(
+          pjit.pjit(
+              fn, in_shardings=(), out_shardings=jax.sharding.PartitionSpec()
+          )
+      )
+    else:
+      return jax.jit(fn)
+
+  def test_parse(self):
+    rules = _rules.Rules.parse([('a', 'b', 'zoom')])
+    self.assertLen(rules.rules, 1)
+    self.assertIsInstance(rules.rules[0], _rules.ZoomRule)
+    source = jnp.ones((6, 4, 8), dtype=jnp.float32)
+    target = jax.ShapeDtypeStruct((6, 8, 12), jnp.float32)
+    self.assertIsInstance(rules.rules[0].get_transformation(source, target),
+                          _rules.ZoomTransformation)
+
+  @parameterized.named_parameters(('jit', False), ('pjit', True))
+  def test_transform(self, use_pjit):
+    def zoom_fn():
+      target_shape_dtype = jax.ShapeDtypeStruct(
+          shape=(6, 8, 12), dtype=jnp.float32)
+      tx = _rules.ZoomTransformation(
+          source=jnp.ones((6, 4, 8)),
+          target=None,
+          target_shape_dtype=target_shape_dtype)
+      return tx()
+
+    zoom_fn = self.wrap_fn(zoom_fn, use_pjit)
+    np.testing.assert_allclose(zoom_fn(), jnp.ones((6, 8, 12)))
+
+
 class VitZoomTest(parameterized.TestCase):
 
   def setUp(self):

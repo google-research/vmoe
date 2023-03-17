@@ -108,6 +108,8 @@ class Rules:
             reps=transform[2])
       elif transform[0] == 'vit_zoom':
         rule = VitZoomRule(pattern=pattern, replacement=replacement)
+      elif transform[0] == 'zoom':
+        rule = ZoomRule(pattern=pattern, replacement=replacement)
       else:
         raise ValueError(f'Rule {rule!r} cannot be parsed.')
       parsed_rules.append(rule)
@@ -208,6 +210,15 @@ class VitZoomRule(RegexRule):
         target=None if isinstance(target, jax.ShapeDtypeStruct) else target)
 
 
+@dataclasses.dataclass
+class ZoomRule(RegexRule):
+
+  def get_transformation(self, source, target) -> 'ZoomTransformation':
+    return ZoomTransformation(
+        target_shape_dtype=self.get_shape_dtype(target), source=source,
+        target=None if isinstance(target, jax.ShapeDtypeStruct) else target)
+
+
 class Transformation(abc.ABC, flax.struct.PyTreeNode):
   target_shape_dtype: jax.ShapeDtypeStruct = flax.struct.field(
       pytree_node=False)
@@ -272,10 +283,45 @@ class StackTransformation(Transformation):
     return jnp.stack(self.to_stack, axis=self.axis)
 
 
-class VitZoomTransformation(Transformation):
-  """Resizes with linear interpolation the source array, as done in ViT for positional embeddings."""
+class ZoomTransformation(Transformation):
+  """Resizes with linear interpolation the source array."""
   source: Array = flax.struct.field(pytree_node=True)
   target: Optional[Array] = flax.struct.field(pytree_node=True, default=None)
+
+  @classmethod
+  def _zoom(cls, source, callback_shape_dtype, zoom):
+    # Wrap scipy.ndimage.zoom with a _pure_callback call.
+    def _pure_callback_zoom(x):
+      return jax.pure_callback(
+          lambda xx: scipy.ndimage.zoom(xx, zoom, order=1),
+          callback_shape_dtype, x, vectorized=False)
+    # When using pjit, we need to wrap the pure callback with xmap.
+    # TODO(jpuigcerver): Simplify this when pure_callback is well supported with
+    # pjit.
+    mesh = maps.thread_resources.env.physical_mesh
+    if mesh.empty:
+      return _pure_callback_zoom(source)
+    else:
+      source = partitioning.with_sharding_constraint(
+          source, partitioning.PartitionSpec())
+      return maps.xmap(
+          _pure_callback_zoom,
+          in_axes=((None,) * source.ndim,),
+          out_axes=(None,) * source.ndim,
+          axis_resources={n: n for n in mesh.axis_names},
+          axis_sizes=mesh.shape)(source)
+
+  def __call__(self) -> Array:
+    source = self.source
+    target = self.target_shape_dtype if self.target is None else self.target
+    zoom = tuple(map(lambda n, o: n / o, target.shape, source.shape))
+    callback_shape_dtypes = jax.ShapeDtypeStruct(
+        shape=target.shape, dtype=source.dtype)
+    return self._zoom(source, callback_shape_dtypes, zoom)
+
+
+class VitZoomTransformation(ZoomTransformation):
+  """Resizes with linear interpolation the source array, as done in ViT for positional embeddings."""
 
   @classmethod
   def _get_tok_and_grid_shape(cls, value):
@@ -290,29 +336,6 @@ class VitZoomTransformation(Transformation):
       return False, grid_shape
     else:
       return True, grid_shape
-
-  @classmethod
-  def _zoom(cls, source_grid_emb, callback_shape_dtype, zoom):
-    # Wrap scipy.ndimage.zoom with a _pure_callback call.
-    def _pure_callback_zoom(x):
-      return jax.pure_callback(
-          lambda xx: scipy.ndimage.zoom(xx, zoom, order=1),
-          callback_shape_dtype, x, vectorized=False)
-    # When using pjit, we need to wrap the pure callback with xmap.
-    # TODO(jpuigcerver): Simplify this when pure_callback is well supported with
-    # pjit.
-    mesh = maps.thread_resources.env.physical_mesh
-    if mesh.empty:
-      return _pure_callback_zoom(source_grid_emb)
-    else:
-      source_grid_emb = partitioning.with_sharding_constraint(
-          source_grid_emb, partitioning.PartitionSpec())
-      return maps.xmap(
-          _pure_callback_zoom,
-          in_axes=((None, None, None, None),),
-          out_axes=(None, None, None, None),
-          axis_resources={n: n for n in mesh.axis_names},
-          axis_sizes=mesh.shape)(source_grid_emb)
 
   def __call__(self) -> Array:
     source = self.source
