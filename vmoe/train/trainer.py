@@ -74,7 +74,6 @@ TreeSummarizer = tree_summarizer.TreeSummarizer
 _getattr = getattr  # Alias of _getattr so that we can mock it in tests.
 
 # pylint: disable=protected-access
-_PositionalSemantics = maps._PositionalSemantics
 _prepare_axis_resources = pjit._prepare_axis_resources
 # pylint: enable=protected-access
 
