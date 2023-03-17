@@ -29,6 +29,9 @@ except ImportError:
   autoaugment = None
 
 
+VALID_KEY = '__valid__'
+
+
 class InKeyOutKey(object):
   """Decorator for preprocessing ops, which adds `inkey` and `outkey` arguments.
 
@@ -146,6 +149,16 @@ def flip_lr():
   return _random_flip_lr_pp
 
 
+def ignore_no_labels(labels_key='labels', valid_key=VALID_KEY):
+
+  def _transform(data):
+    valid = tf.math.logical_and(tf.cast(data.get(valid_key, True), tf.bool),
+                                tf.size(data[labels_key]) > 0)
+    return data | {valid_key: valid}
+
+  return _transform
+
+
 @InKeyOutKey()
 def inception_crop(resize_size=None, area_min=5, area_max=100,
                    resize_method='bilinear'):
@@ -184,7 +197,8 @@ def inception_crop(resize_size=None, area_min=5, area_max=100,
 
 
 def keep(*keys):
-  """Keeps only the given keys."""
+  """Keeps only the given keys (in addition to metadata keys)."""
+  keys = tuple(keys) + (VALID_KEY,)
 
   def _keep(data):
     return {k: v for k, v in data.items() if k in keys}

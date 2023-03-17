@@ -24,7 +24,7 @@ from vmoe.data import pp_ops
 class PreprocessOpsTest(tf.test.TestCase):
 
   def get_data(self, dtype=tf.uint8):
-    return {'image': tf.random.uniform([640, 480, 3], 0, 255)}
+    return {'image': tf.cast(tf.random.uniform([640, 480, 3], 0, 255), dtype)}
 
   def test_resize(self):
     data = self.get_data()
@@ -45,6 +45,13 @@ class PreprocessOpsTest(tf.test.TestCase):
     data = {'image': f.getvalue()}
     output = pp_ops.decode_jpeg_and_inception_crop(128)(data)['image']
     self.assertEqual(output.shape, (128, 128, 3))
+
+  def test_ignore_no_labels(self):
+    op = pp_ops.ignore_no_labels(labels_key='labels', valid_key='_valid')
+    data = [{'labels': []}, {'labels': [-1]}, {'labels': [1], '_valid': False}]
+    data_masked = [op(x) for x in data]
+    valid = np.stack([x['_valid'].numpy() for x in data_masked])
+    np.testing.assert_array_equal(valid, np.asarray([False, True, False]))
 
   def test_inception_crop(self):
     image = np.random.randint(0, 256, [224, 224, 3]).astype('uint8')

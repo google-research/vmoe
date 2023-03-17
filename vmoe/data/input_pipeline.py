@@ -111,8 +111,9 @@ def get_dataset(
   else:
     # Other variants process each example only once and include VALID_KEY to
     # differentiate real vs. fake examples (that are added later).
-    process_fn = _compose_fns(get_data_process_fn(process),
-                              lambda x: {**x, VALID_KEY: True})
+    def _mask_fn(data):
+      return data | {VALID_KEY: data.get(VALID_KEY, True)}
+    process_fn = _compose_fns(get_data_process_fn(process), _mask_fn)
   # Process data.
   data = data.map(
       map_func=process_fn,
