@@ -73,10 +73,6 @@ TreeSummarizer = tree_summarizer.TreeSummarizer
 
 _getattr = getattr  # Alias of _getattr so that we can mock it in tests.
 
-# pylint: disable=protected-access
-_prepare_axis_resources = pjit._prepare_axis_resources
-# pylint: enable=protected-access
-
 
 def create_checkpoint_hook(*, workdir: str, progress_hook: ReportProgress,
                            train_steps: int,
