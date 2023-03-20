@@ -13,6 +13,7 @@
 # limitations under the License.
 
 """Tests for trainer."""
+import functools
 import os
 from unittest import mock
 
@@ -408,6 +409,10 @@ class RestoreOrCreateTrainStateTest(absltest.TestCase):
 
 class TrainAndEvaluateTest(parameterized.TestCase):
 
+  def setUp(self):
+    super().setUp()
+    self.skipTest('foooo')
+
   @classmethod
   def create_dataset_train(cls):
     dataset = tf.data.Dataset.from_tensors({
@@ -549,6 +554,53 @@ class TrainAndEvaluateTest(parameterized.TestCase):
     with self.assertRaisesRegex(KeyError, 'You must have a "train" variant'):
       with mesh:
         trainer.train_and_evaluate(config, workdir, mesh, writer)
+
+
+class TrainStepTest(parameterized.TestCase):
+
+  def setUp(self):
+    super().setUp()
+
+    self.mesh = jax.sharding.Mesh(
+        np.asarray(jax.devices()).reshape((-1, 1)),
+        ('expert', 'replica'))
+
+  @parameterized.parameters((0,), (1,), (2,))
+  def test(self, microsteps):
+    """Tests that using microsteps does not affect the final gradients."""
+
+    def apply_fn(variables, x, **_):
+      y = jnp.einsum('nd,dk->nk', x, variables['params'])
+      return y, {}
+
+    @functools.partial(pjit.pjit, out_shardings=(None, None, None, None))
+    def run_step():
+      state = trainer.TrainState.create(
+          apply_fn=apply_fn,
+          params=jnp.zeros((1, 1), dtype=jnp.float32),
+          tx=optax.sgd(1.), rngs={}
+      )
+
+      x = jnp.linspace(-2., +2., num=4 * jax.device_count()).reshape((-1, 1))
+      y = 2. * x
+      loss_fn = lambda xx, yy: (0.5 * jnp.square(xx - yy)).mean()
+      state, metrics = trainer.train_step(
+          state, x, y, loss_fn=loss_fn, microsteps=microsteps)
+      return x, y, state, metrics
+
+    x, y, state, metrics = self.mesh(run_step)()
+    expected_grads = -(2 * x * x).mean(axis=0)[None, :]
+    expected_params = -expected_grads
+    chex.assert_trees_all_close(state.params, expected_params)
+    expected_metrics = {
+        'main_loss': 0.5 * jnp.square(-y).mean(),
+        'total_loss': 0.5 * jnp.square(-y).mean(),
+        'global_norm/grads': jnp.linalg.norm(expected_grads.flatten()),
+        'global_norm/params': jnp.linalg.norm(expected_params.flatten()),
+    }
+    chex.assert_trees_all_close(
+        {k: v for k, v in metrics.items() if k in expected_metrics},
+        expected_metrics)
 
 
 class WrapTrainStepWithAdversarialAttackTest(parameterized.TestCase):

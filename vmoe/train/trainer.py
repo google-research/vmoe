@@ -75,6 +75,64 @@ TreeSummarizer = tree_summarizer.TreeSummarizer
 _getattr = getattr  # Alias of _getattr so that we can mock it in tests.
 
 
+def accumulate_gradients_and_metrics(grad_and_metrics_fn, microsteps: int):
+  """Wraps a function that computes gradients and metrics to use microsteps.
+
+  The new function will split the input `images` and `labels` into `microsteps`
+  chunks, and will compute the gradients and metrics on each chunk, and average
+  all gradients and metrics. A new PRNGKey is passed to each microstep.
+
+  Args:
+    grad_and_metrics_fn: A function that takes (params, images, labels, rngs)
+      and returns gradients (same shape as params), and metrics (a dictionary
+      with array leaves).
+    microsteps: Positive integer, controlling the number of microsteps.
+
+  Returns:
+    A function with the same signature as grad_and_metric_fn.
+  """
+  if not microsteps or microsteps < 0:
+    return grad_and_metrics_fn
+
+  def new_grad_and_metrics_fn(params, images, labels, rngs):
+    batch_size = images.shape[0]
+    # TODO(jpuigcerver): Generalize for batch sizes that are not fully sharded.
+    batch_size_per_device = batch_size // jax.device_count()
+    assert batch_size_per_device % microsteps == 0
+    # Note: we need this reshape because dynamic_index/dynamic_index_in_dim do
+    # not work with strides, and we need to make sure that all acc steps cover
+    # all devices.
+    # TODO(jpuigcerver): Pass this PartitionSpec as an argument.
+    pspec = jax.sharding.PartitionSpec(('expert', 'replica'))
+    images = images.reshape((-1, microsteps) + images.shape[1:])
+    labels = labels.reshape((-1, microsteps) + labels.shape[1:])
+    images = pjit.with_sharding_constraint(images, pspec)
+    labels = pjit.with_sharding_constraint(labels, pspec)
+
+    def accum_fn(i, state):
+      grad, rngs, metrics = state
+      imgs = jax.lax.dynamic_index_in_dim(images, i, axis=1, keepdims=False)
+      lbls = jax.lax.dynamic_index_in_dim(labels, i, axis=1, keepdims=False)
+      new_grad, (next_rngs, new_metrics) = grad_and_metrics_fn(
+          params, imgs, lbls, rngs)
+      new_grad, new_metrics = jax.tree_util.tree_map(
+          lambda x, y: x + y, (grad, metrics), (new_grad, new_metrics))
+      return new_grad, next_rngs, new_metrics
+
+    # Accumulate (sum) gradients and metrics through many microsteps.
+    imgs = jax.lax.dynamic_index_in_dim(images, 0, axis=1, keepdims=False)
+    lbls = jax.lax.dynamic_index_in_dim(labels, 0, axis=1, keepdims=False)
+    grads, (next_rngs, metrics) = grad_and_metrics_fn(params, imgs, lbls, rngs)
+    grads, next_rngs, metrics = jax.lax.fori_loop(
+        1, microsteps, accum_fn, (grads, next_rngs, metrics))
+    # Average gradients and metrics through all the microsteps.
+    grads, metrics = jax.tree_util.tree_map(lambda x: x / microsteps,
+                                            (grads, metrics))
+    return grads, (next_rngs, metrics)
+
+  return new_grad_and_metrics_fn
+
+
 def create_checkpoint_hook(*, workdir: str, progress_hook: ReportProgress,
                            train_steps: int,
                            **kwargs) -> PeriodicCheckpointSaver:
@@ -543,22 +601,26 @@ def train_step(
     images: Array,
     labels: Array,
     loss_fn: Callable[[Array, Array], Array],
+    microsteps: Optional[int] = None,
     summarizer: Optional[TreeSummarizer] = None,
 ) -> Tuple[TrainState, Mapping[str, Any]]:
   """Performs one update step of the given TrainState object ."""
-  rngs, next_rngs = utils.tree_rngs_split(state.rngs)
 
   @functools.partial(jax.grad, has_aux=True)
-  def compute_grads_and_metrics(params):
+  def compute_grads_and_metrics(params, images, labels, rngs):
+    rngs, next_rngs = utils.tree_rngs_split(state.rngs)
     logits, metrics = state.apply_fn({'params': params}, images, rngs=rngs)
     metrics = dict(**metrics)
     metrics['main_loss'] = jnp.mean(loss_fn(logits, labels))
     metrics = jax.tree_map(jnp.mean, metrics)
     total_loss = metrics['main_loss'] + metrics.get('auxiliary_loss', 0.0)
     metrics['total_loss'] = total_loss
-    return total_loss, metrics
+    return total_loss, (next_rngs, metrics)
 
-  grads, metrics = compute_grads_and_metrics(state.params)
+  compute_grads_and_metrics = accumulate_gradients_and_metrics(
+      compute_grads_and_metrics, microsteps)
+  grads, (next_rngs, metrics) = compute_grads_and_metrics(
+      state.params, images, labels, state.rngs)
   # Update train state.
   state = state.apply_gradients(grads=grads, rngs=next_rngs)
 
@@ -624,6 +686,7 @@ def train_and_evaluate(config: ml_collections.ConfigDict, workdir: str,
   train_step_fn = functools.partial(
       train_step,
       loss_fn=train_loss_fn,
+      microsteps=config.get('microsteps'),
       summarizer=summarizer)
   if config.get('adversarial', {}):
     adversarial_config = config.adversarial.to_dict()
