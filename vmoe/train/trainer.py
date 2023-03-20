@@ -33,6 +33,7 @@ from jax.experimental import pjit
 import jax.numpy as jnp
 import ml_collections
 import numpy as np
+import optax
 from vmoe import checkpoints
 from vmoe import initialization
 from vmoe import multihost_utils
@@ -354,14 +355,14 @@ def get_loss_fn(name: str, **kwargs):
   """Returns the train/evaluation losses and the way to predict labels."""
   def default_sigmoid_xent(logits, labels, **kw):
     return jnp.sum(
-        optimizer.optax.sigmoid_binary_cross_entropy(logits, labels, **kw),
+        optax.sigmoid_binary_cross_entropy(logits, labels, **kw),
         axis=-1)
 
   default_label_pred_fn = lambda logits: jnp.argmax(logits, -1)
   loss_fns = {
       'softmax_xent': (
-          optimizer.optax.softmax_cross_entropy,
-          optimizer.optax.softmax_cross_entropy,
+          optax.softmax_cross_entropy,
+          optax.softmax_cross_entropy,
           default_label_pred_fn),
       'sigmoid_xent':
           (default_sigmoid_xent, default_sigmoid_xent, default_label_pred_fn),
@@ -560,6 +561,10 @@ def train_step(
   grads, metrics = compute_grads_and_metrics(state.params)
   # Update train state.
   state = state.apply_gradients(grads=grads, rngs=next_rngs)
+
+  # Report the global L2 norm of gradients and parameters.
+  metrics['global_norm/grads'] = optax.global_norm(grads)
+  metrics['global_norm/params'] = optax.global_norm(state.params)
 
   if summarizer:
     # Summarize arrays in the gradients tree or the train state.
