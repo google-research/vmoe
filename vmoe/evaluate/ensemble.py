@@ -70,7 +70,7 @@ def ensemble_softmax_xent_train(repeated_logits: Array, labels: Array,
     ensemble softmax cross entropy used at training time.
   """
   repeated_labels = jnp.repeat(labels, ensemble_size, axis=0)
-  return optax.softmax_cross_entropy(repeated_logits, repeated_labels)
+  return optax.softmax_cross_entropy(repeated_logits, repeated_labels)  # pytype: disable=bad-return-type  # numpy-scalars
 
 
 def ensemble_sigmoid_xent_train(repeated_logits: Array, labels: Array,
