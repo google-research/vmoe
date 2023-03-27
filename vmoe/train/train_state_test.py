@@ -12,35 +12,31 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Tests for train_state."""
-
 from absl.testing import absltest
-from vmoe import partitioning
+import chex
+import numpy as np
+import optax
 from vmoe.train import train_state
-
-
-PartitionSpec = partitioning.PartitionSpec
 
 
 class TrainStateTreeAxisResourcesTest(absltest.TestCase):
 
-  def test_train_state(self):
-    params = {'a': 1, 'b': 2, 'c': 3}
-    rngs = {'dropout': None}
+  def test_apply_gradients_and_compute_global_norms(self):
     state = train_state.TrainState.create(
         apply_fn=lambda x: x,
-        params=params,
-        tx=lambda x: x,
-        rngs=rngs)
-    output = partitioning.tree_axis_resources_from_regexes(
-        tree=state, axis_resources_regexes=[
-            ('.*/a$', ('expert',)),
-            ('.*/c$', (('expert', 'width'),)),
-        ])
-    self.assertIsInstance(output, state.TrainState)
-    self.assertEqual(output.params['a'], PartitionSpec('expert'))
-    self.assertEqual(output.params['b'], PartitionSpec())
-    self.assertEqual(output.params['c'], PartitionSpec(('expert', 'width')))
+        params={'w': np.asarray((1.,), dtype=np.float32)},
+        tx=optax.sgd(0.5),
+        rngs={})
+    grads = {'w': np.asarray((1.,), dtype=np.float32)}
+    new_state, global_norms = state.apply_gradients_and_compute_global_norms(
+        grads, rngs={})
+    chex.assert_trees_all_close(new_state.params,
+                                {'w': np.asarray((.5,), dtype=np.float32)})
+    chex.assert_trees_all_close(global_norms, {
+        'grads': np.asarray((1.,), dtype=np.float32),
+        'params': np.asarray((.5,), dtype=np.float32),
+        'updates': np.asarray((.5,), dtype=np.float32),
+    })
 
 
 if __name__ == '__main__':

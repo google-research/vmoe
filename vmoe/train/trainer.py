@@ -21,6 +21,7 @@ from typing import Any, Callable, Dict, Mapping, Optional, Sequence, Tuple, Unio
 
 from absl import logging
 from clu import metric_writers
+from clu import parameter_overview
 from clu import periodic_actions
 import flax
 import flax.linen as nn
@@ -405,6 +406,8 @@ def restore_or_create_train_state(
     train_state = initialize_train_state_from_checkpoint(
         train_state=train_state, mesh=mesh, thread_pool=thread_pool,
         **initialization_kwargs)
+  parameter_overview.log_parameter_overview(
+      train_state_shape_dtype.params, include_stats=False)
   return create_or_reuse_train_state(
       train_state=train_state, initialize_fn=initialize_fn, mesh=mesh)
 
@@ -621,12 +624,9 @@ def train_step(
       compute_grads_and_metrics, microsteps)
   grads, (next_rngs, metrics) = compute_grads_and_metrics(
       state.params, images, labels, state.rngs)
-  # Update train state.
-  state = state.apply_gradients(grads=grads, rngs=next_rngs)
-
-  # Report the global L2 norm of gradients and parameters.
-  metrics['global_norm/grads'] = optax.global_norm(grads)
-  metrics['global_norm/params'] = optax.global_norm(state.params)
+  state, global_norms = state.apply_gradients_and_compute_global_norms(
+      grads, rngs=next_rngs)
+  metrics.update({f'global_norm/{k}': v for k, v in global_norms.items()})
 
   if summarizer:
     # Summarize arrays in the gradients tree or the train state.

@@ -17,12 +17,31 @@ from typing import Any, Callable, Dict, Mapping, Tuple, Union
 
 import flax.training.train_state
 import jax
+import optax
 
 PRNGKey = Union[jax.numpy.ndarray, jax.random.KeyArray]
 
 
 class TrainState(flax.training.train_state.TrainState):
+  """Extension of FLAX's TrainState."""
   rngs: Dict[str, PRNGKey]
+
+  def apply_gradients_and_compute_global_norms(self, grads, **kwargs):
+    updates, new_opt_state = self.tx.update(
+        grads, self.opt_state, self.params)
+    new_params = optax.apply_updates(self.params, updates)
+    state = self.replace(
+        step=self.step + 1,
+        params=new_params,
+        opt_state=new_opt_state,
+        **kwargs,
+    )
+    global_norms = {
+        'grads': optax.global_norm(grads),
+        'updates': optax.global_norm(updates),
+        'params': optax.global_norm(state.params),
+    }
+    return state, global_norms
 
 
 # TrainStateAxisResources is a PyTree with the same structure as TrainState but
