@@ -172,7 +172,7 @@ class EvaluateMultipleDatasets(periodic_actions.PeriodicCallback):
       # Note: This is not the initial EvalState, this only serves to compile the
       # eval step for a given dataset.
       t0 = time.time()
-      eval_step_pjit_ds = eval_step_pjit.lower(
+      eval_step_pjit_ds = eval_step_pjit.lower(  # pytype: disable=attribute-error  # always-use-return-annotations
           eval_state_dtype_struct,
           params,
           datasets_element_shape_dtype[name]['image'],
