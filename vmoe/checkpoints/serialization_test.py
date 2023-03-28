@@ -16,6 +16,7 @@
 
 from absl.testing import absltest
 import jax
+from jax import core
 import numpy as np
 from vmoe.checkpoints import serialization
 
@@ -33,7 +34,7 @@ class SerializationTest(absltest.TestCase):
     lazy_array_chunks, array_chunks = _make_lazy_and_normal_array_chunks()
     tree = {
         'a': 'foo',
-        'b': jax.ShapedArray((5, 3), dtype=jax.numpy.bfloat16),
+        'b': core.ShapedArray((5, 3), dtype=jax.numpy.bfloat16),
         'c': np.float32(5.0),
         'd': np.asarray([1, 2, 3]),
         'e': complex(3., 4.),
@@ -42,7 +43,7 @@ class SerializationTest(absltest.TestCase):
         'h': SliceNdArray.create([SliceNd(Slice(), Slice()), SliceNd()]),
         'i': lazy_array_chunks,
         'j': IndexInfo(
-            global_shape=jax.ShapedArray((20,), dtype=jax.numpy.float32),
+            global_shape=core.ShapedArray((20,), dtype=jax.numpy.float32),
             global_slices=(SliceNd(Slice(2, 5)), SliceNd(Slice(3, 9))),
             shards=(1, 3))
     }

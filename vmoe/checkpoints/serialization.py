@@ -23,6 +23,7 @@ from typing import Any, Dict, Mapping
 
 import flax.serialization
 import jax
+from jax import core
 import numpy as np
 from vmoe.checkpoints import types
 
@@ -155,16 +156,16 @@ class _MsgpackExtType(enum.IntEnum):
   index_info = 8
 
 
-def _shaped_array_to_bytes(x: jax.ShapedArray) -> bytes:
+def _shaped_array_to_bytes(x: core.ShapedArray) -> bytes:
   tpl = (x.shape, x.dtype.name, x.weak_type, x.named_shape)
   assert all(isinstance(key, str) for key in x.named_shape)
   return msgpack.packb(tpl, use_bin_type=True)
 
 
-def _shaped_array_from_bytes(data: bytes) -> jax.ShapedArray:
+def _shaped_array_from_bytes(data: bytes) -> core.ShapedArray:
   shape, dtype_name, weak_type, named_shape = msgpack.unpackb(data, raw=True)
   named_shape = {k.decode('utf-8'): v for k, v in named_shape.items()}
-  return jax.ShapedArray(
+  return core.ShapedArray(
       shape=shape,
       dtype=_dtype_from_name(dtype_name),
       weak_type=weak_type,
@@ -267,7 +268,7 @@ def _msgpack_ext_pack(x):
   if isinstance(x, complex):
     return msgpack.ExtType(_MsgpackExtType.native_complex,
                            msgpack.packb((x.real, x.imag)))
-  if isinstance(x, jax.ShapedArray):
+  if isinstance(x, core.ShapedArray):
     return msgpack.ExtType(_MsgpackExtType.shaped_array,
                            _shaped_array_to_bytes(x))
   if isinstance(x, Slice):

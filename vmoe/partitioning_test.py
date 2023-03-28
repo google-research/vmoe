@@ -22,6 +22,7 @@ from unittest import mock
 from absl.testing import absltest
 from absl.testing import parameterized
 import jax
+from jax import core
 import jax.numpy as jnp
 import numpy as np
 from vmoe import partitioning
@@ -351,11 +352,11 @@ def _make_tree_axis_resources_mesh_test_data():
   # These shapes are those of the arrays in the process running the code
   # (i.e. process_index=0).
   tree = {
-      'v': jax.ShapedArray(shape=(5, 5), dtype=jnp.float32),
-      'w': jax.ShapedArray(shape=(5, 5), dtype=jnp.float32),
-      'x': jax.ShapedArray(shape=(5, 5), dtype=jnp.float32),
-      'y': jax.ShapedArray(shape=(5, 5), dtype=jnp.float32),
-      'z': jax.ShapedArray(shape=(5, 5), dtype=jnp.float32),
+      'v': core.ShapedArray(shape=(5, 5), dtype=jnp.float32),
+      'w': core.ShapedArray(shape=(5, 5), dtype=jnp.float32),
+      'x': core.ShapedArray(shape=(5, 5), dtype=jnp.float32),
+      'y': core.ShapedArray(shape=(5, 5), dtype=jnp.float32),
+      'z': core.ShapedArray(shape=(5, 5), dtype=jnp.float32),
   }
   axis_resources = {
       # Array 'v' is not partitioned, each device holds a replica of this.

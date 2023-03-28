@@ -41,6 +41,7 @@ from typing import Any, Dict, Iterator, List, Optional, Sequence, Tuple
 
 from absl import logging
 import jax
+from jax import core
 from jax import Shard
 import numpy as np
 from vmoe import multihost_utils
@@ -386,7 +387,7 @@ def _make_dir_sync(workdir: str):
 def _make_index_info(
     slicend_to_ckpt_shards: Dict[SliceNd, int],
     array: jax.Array) -> IndexInfo:
-  global_shape = jax.ShapedArray(
+  global_shape = core.ShapedArray(
       shape=array.shape, dtype=array.dtype, weak_type=array.weak_type)
   global_slices = sorted(slicend_to_ckpt_shards.keys())
   shards = [slicend_to_ckpt_shards[slicend] for slicend in global_slices]

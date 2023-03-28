@@ -21,6 +21,7 @@ from absl.testing import absltest
 from absl.testing import parameterized
 import chex
 import jax
+from jax import core
 from jax.experimental import pjit
 import jax.numpy as jnp
 import numpy as np
@@ -197,11 +198,11 @@ class RestoreCheckpointTest(absltest.TestCase):
         'shard_count': 1,
         'index': {
             'x': partitioned.IndexInfo(
-                global_shape=jax.ShapedArray(shape=(5,), dtype=jnp.float32),
+                global_shape=core.ShapedArray(shape=(5,), dtype=jnp.float32),
                 global_slices=[SliceNd(Slice(0, 5))],
                 shards=[0]),
             'y': partitioned.IndexInfo(
-                global_shape=jax.ShapedArray(shape=(), dtype=jnp.int32),
+                global_shape=core.ShapedArray(shape=(), dtype=jnp.int32),
                 global_slices=[SliceNd()],
                 shards=[0]),
         }

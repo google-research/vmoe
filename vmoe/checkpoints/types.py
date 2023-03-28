@@ -21,6 +21,7 @@ import dataclasses
 from typing import Dict, List, Iterator, Optional, Sequence, Tuple, Union
 
 import jax
+from jax import core
 import numpy as np
 import vmoe.utils
 
@@ -188,6 +189,6 @@ class IndexInfo:
     shards: Sequence of integers representing the shard index that contains the
       corresponding array chunk.
   """
-  global_shape: jax.ShapedArray
+  global_shape: core.ShapedArray
   global_slices: Sequence[SliceNd]
   shards: Sequence[int]
