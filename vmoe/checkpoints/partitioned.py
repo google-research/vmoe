@@ -1,4 +1,4 @@
-# Copyright 2022 Google LLC.
+# Copyright 2023 Google LLC.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -56,7 +56,7 @@ ArrayChunks = types.ArrayChunks
 IndexInfo = types.IndexInfo
 LazyArrayChunks = types.LazyArrayChunks
 MapResult = multiprocessing.pool.MapResult
-OpShardingSharding = jax.sharding.OpShardingSharding
+GSPMDSharding = jax.sharding.GSPMDSharding
 PyTree = Any
 Sharding = jax.sharding.Sharding
 Slice = types.Slice
@@ -361,7 +361,7 @@ def _get_array_sharding_or_default(arr: jax.Array) -> Sharding:
   if hasattr(arr, 'sharding'):
     return arr.sharding
   else:
-    return OpShardingSharding.get_replicated(jax.devices())
+    return GSPMDSharding.get_replicated(jax.devices())
 
 
 def _intersect_slicend(a: SliceNd, b: SliceNd) -> Optional[SliceNd]:
