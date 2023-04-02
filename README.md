@@ -9,7 +9,7 @@ the paper:
   Rodolphe Jenatton, André Susano Pinto, Daniel Keysers, and Neil Houlsby.
 
 
-We will soon provide a colab analysing one of the models that we have released,
+We will soon provide a Colab analysing one of the models that we have released,
 as well as "config" files to train from scratch and fine-tune checkpoints. Stay
 tuned.
 
