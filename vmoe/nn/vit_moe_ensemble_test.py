@@ -17,6 +17,7 @@ import copy
 
 from absl.testing import absltest
 from absl.testing import parameterized
+import flax
 import jax
 from vmoe.nn import vit_moe_ensemble
 from vmoe.nn import vit_moe_test as t
@@ -43,7 +44,7 @@ class VitMoeEnsembleTest(parameterized.TestCase):
     rngs = dict(params=jax.random.PRNGKey(0), gating=jax.random.PRNGKey(1))
     x = jax.random.normal(jax.random.PRNGKey(0), (16, 4, 4, 3))
     shapes = jax.tree_map(lambda x: x.shape, jax.eval_shape(init, rngs, x))
-    shapes = shapes.unfreeze()
+    shapes = flax.core.unfreeze(shapes)
     expected_shapes = {
         'params': {
             'Encoder': {
