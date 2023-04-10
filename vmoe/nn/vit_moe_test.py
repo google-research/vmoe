@@ -19,6 +19,7 @@ import math
 from absl.testing import absltest
 from absl.testing import parameterized
 import chex
+import flax
 import jax
 import jax.numpy as jnp
 from vmoe.nn import vit_moe
@@ -152,7 +153,9 @@ class VitMoeTest(parameterized.TestCase):
       x = jax.random.normal(jax.random.PRNGKey(0), (16, 4, 4, 3))
       return model.init(rngs, x)
 
-    shapes = jax.tree_map(lambda x: x.shape, jax.eval_shape(init)).unfreeze()
+    shapes = jax.tree_map(
+        lambda x: x.shape, flax.core.unfreeze(jax.eval_shape(init))
+    )
     expected_shapes = {
         'params': {
             'Encoder': {
@@ -204,7 +207,7 @@ class VitMoeTest(parameterized.TestCase):
                 dropout=jax.random.PRNGKey(2))
     x = jax.random.normal(jax.random.PRNGKey(0), (16, 4, 4, 3))
     variables = model.init(rngs, x)
-    variables = variables.unfreeze()
+    variables = flax.core.unfreeze(variables)
     variables['params']['head']['kernel'] = jax.random.normal(
         jax.random.PRNGKey(0), variables['params']['head']['kernel'].shape)
     output1, _ = model.apply(
@@ -236,7 +239,7 @@ class VitMoeTest(parameterized.TestCase):
     x = jax.ShapeDtypeStruct((16, 4, 4, 3), jax.numpy.float32)
     shapes = jax.tree_map(lambda x: x.shape,
                           jax.eval_shape(model.init, rngs, x))
-    shapes = shapes.unfreeze()
+    shapes = flax.core.unfreeze(shapes)
     self.assertDictEqual(shapes['params']['Encoder']['posembed_input'],
                          {'pos_embedding': (1, seq_length, 8)})
     self.assertDictContainsSubset(params_subset, shapes['params'])
