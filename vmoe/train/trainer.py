@@ -139,7 +139,7 @@ def create_checkpoint_hook(*, workdir: str, progress_hook: ReportProgress,
                            **kwargs) -> PeriodicCheckpointSaver:
   on_steps = set(kwargs.pop('on_steps', []))
   # Always save checkpoint on the last step.
-  on_steps.update([train_steps])
+  on_steps.update((0, train_steps))
   return PeriodicCheckpointSaver(
       prefix=os.path.join(workdir, 'ckpt'),
       report_progress=progress_hook,
@@ -736,6 +736,10 @@ def train_and_evaluate(config: ml_collections.ConfigDict, workdir: str,
       train_steps=train_steps,
       extra_rng_keys=config.get('extra_rng_keys', []),
       **config.get('fewshot', {}))
+  # Run checkpoint hook just before starting the loop. This will save the train
+  # state at initialization.
+  if init_step == 0:
+    checkpoint_hook(init_step, state=train_state, iterator=tr_iter)
   with metric_writers.ensure_flushes(writer):
     # Explicitly compile train_step here and report the compilation time.
     t0 = time.time()
