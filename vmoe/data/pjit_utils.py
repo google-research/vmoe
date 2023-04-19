@@ -17,6 +17,7 @@ import collections
 import itertools
 from typing import Any, Iterator, List, Optional, Sequence
 
+from absl import logging
 from clu.data import dataset_iterator
 import jax
 from jax.experimental import maps
@@ -82,6 +83,11 @@ def prefetch_to_device(
   def _to_global(x):
     # View x as a numpy array (in case it's a TF tensor).
     x = np.asarray(memoryview(x))
+    if not np.issubdtype(x.dtype, np.number):
+      logging.log_first_n(
+          logging.WARNING,
+          'A Numpy array with dtype=%r and shape=%r cannot be converted to a '
+          'jax.Array', 1, x.dtype, x.shape)
     device_buffers = put_to_devices(x, local_devices)
     global_shape = (x.shape[0] * jax.process_count(),) + x.shape[1:]
     return jax.make_array_from_single_device_arrays(
