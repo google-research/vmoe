@@ -69,7 +69,7 @@ class PartitioningTest(parameterized.TestCase):
         return_value=hardware_mesh):
       with mock.patch.object(
           partitioning, f'get_auto_logical_mesh_{platform}') as mock_get:
-        partitioning.get_auto_logical_mesh(2, [device])
+        partitioning.get_auto_logical_mesh(2, [device, device])
         mock_get.assert_called_with(2, hardware_mesh)
 
   @parameterized.named_parameters(

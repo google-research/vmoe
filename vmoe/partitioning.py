@@ -119,6 +119,12 @@ def get_auto_logical_mesh(
     devices: Optional[Sequence[Device]] = None) -> Mesh:
   """Returns a heuristic logical mesh with axes ('expert', 'replica')."""
   devices = devices or jax.devices()
+  num_devices = len(devices)
+  if num_partitions > num_devices:
+    logging.error('num_partitions=%d cannot be satisfied with num_devices=%d. '
+                  'Setting num_partitions=%d.',
+                  num_partitions, num_devices, num_devices)
+    num_partitions = num_devices
   if devices[0].platform == 'tpu':
     return get_auto_logical_mesh_tpu(num_partitions,
                                      get_hardware_mesh_tpu(devices))

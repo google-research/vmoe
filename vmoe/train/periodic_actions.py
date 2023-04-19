@@ -58,4 +58,6 @@ class ReportProgress(periodic_actions.ReportProgress):
       if memory_profiler:
         memory_usage_mb = memory_profiler.memory_usage(max_usage=True)
         scalar_metrics['host_memory_mb'] = memory_usage_mb
+      for key, value in self._time_per_part.items():
+        scalar_metrics[f'uptime_{key}'] = value
       self._writer.write_scalars(step, scalar_metrics)
