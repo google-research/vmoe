@@ -22,6 +22,7 @@ from clu.data import dataset_iterator
 import jax
 from jax.experimental import maps
 import numpy as np
+import tensorflow as tf
 
 Mesh = jax.sharding.Mesh
 PyTree = Any
@@ -81,13 +82,20 @@ def prefetch_to_device(
   local_devices = mesh.local_devices
 
   def _to_global(x):
+    if isinstance(x, tf.RaggedTensor):
+      logging.log_first_n(
+          logging.WARNING,
+          'A RaggedTensor cannot with dtype=%r and shape=%r cannot be '
+          'converted to a jax.Array.', 1, x.dtype, x.shape)
+      return x
     # View x as a numpy array (in case it's a TF tensor).
     x = np.asarray(memoryview(x))
-    if not np.issubdtype(x.dtype, np.number):
+    if not np.issubdtype(x.dtype, np.number) and x.dtype != bool:
       logging.log_first_n(
           logging.WARNING,
           'A Numpy array with dtype=%r and shape=%r cannot be converted to a '
-          'jax.Array', 1, x.dtype, x.shape)
+          'jax.Array.', 1, x.dtype, x.shape)
+      return x
     device_buffers = put_to_devices(x, local_devices)
     global_shape = (x.shape[0] * jax.process_count(),) + x.shape[1:]
     return jax.make_array_from_single_device_arrays(
