@@ -407,7 +407,8 @@ def restore_or_create_train_state(
         train_state=train_state, mesh=mesh, thread_pool=thread_pool,
         **initialization_kwargs)
   parameter_overview.log_parameter_overview(
-      train_state_shape_dtype.params, include_stats=False)
+      train_state_shape_dtype.params, include_stats=False,
+      msg='Parameter overview:')
   return create_or_reuse_train_state(
       train_state=train_state, initialize_fn=initialize_fn, mesh=mesh)
 
