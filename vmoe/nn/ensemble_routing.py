@@ -87,7 +87,7 @@ class NoisyTopExpertsPerItemEnsembleRouter(
     dispatcher = self._create_dispatcher(gates_softmax)
     return dispatcher, metrics
 
-  def _compute_gates_softmax_and_metrics(
+  def _compute_gates_softmax_and_metrics(  # pytype: disable=signature-mismatch  # overriding-parameter-count-checks
       self, inputs: Array) -> Tuple[Array, Metrics]:
     if inputs.ndim != 3:
       raise ValueError(f'inputs.ndim must be 3, but it is {inputs.ndim}')
