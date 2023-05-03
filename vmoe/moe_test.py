@@ -36,37 +36,6 @@ class DispatcherTest(parameterized.TestCase):
   correct. It does not test that the used communication primitives are optimal.
   """
 
-  def _run_dispatch(self, dispatcher):  # pylint: disable=g-unreachable-test-method
-    # (G=2, S=3, D=4)
-    data = jnp.asarray([
-        [[1, 1, 1, 1], [2, 2, 2, 2], [3, 3, 3, 3]],
-        [[4, 4, 4, 4], [5, 5, 5, 5], [6, 6, 6, 6]],
-    ], jnp.float32)
-    output = dispatcher.dispatch(data)
-    # (E=4, GC=4, D=4).
-    expected = jnp.asarray([
-        [[2, 2, 2, 2], [3, 3, 3, 3], [4, 4, 4, 4], [5, 5, 5, 5]],
-        [[1, 1, 1, 1], [3, 3, 3, 3], [6, 6, 6, 6], [4, 4, 4, 4]],
-    ], dtype=jnp.float32)
-    np.testing.assert_array_almost_equal(output, expected)
-
-  def _run_combine(self, dispatcher):  # pylint: disable=g-unreachable-test-method
-    # (E=4, GC=4, D=4).
-    data = jnp.asarray([
-        [[2, 2, 2, 2], [3, 3, 3, 3], [4, 4, 4, 4], [5, 5, 5, 5]],
-        [[1, 1, 1, 1], [3, 3, 3, 3], [6, 6, 6, 6], [4, 4, 4, 4]],
-    ], dtype=jnp.float32)
-    output = dispatcher.combine(data)
-    expected = jnp.asarray([
-        [[1 * .7, 1 * .7, 1 * .7, 1 * .7],
-         [2 * .7, 2 * .7, 2 * .7, 2 * .7],
-         [3 * 1., 3 * 1., 3 * 1., 3 * 1.]],
-        [[4 * 1., 4 * 1., 4 * 1., 4 * 1.],
-         [5 * .7, 5 * .7, 5 * .7, 5 * .7],
-         [6 * .3, 6 * .3, 6 * .3, 6 * .3]],
-    ], dtype=jnp.float32)
-    np.testing.assert_array_almost_equal(output, expected)
-
   def test_compute_capacity_raises_wrong_input_values(self):
     with self.assertRaisesRegex(
         ValueError, 'The values .* lead to capacity .*, but it must be greater '
@@ -81,47 +50,6 @@ class DispatcherTest(parameterized.TestCase):
   )
   def test_convert_partition_spec(self, partition_spec, expected):
     self.assertEqual(moe._convert_partition_spec(partition_spec), expected)
-
-  @parameterized.named_parameters(
-      ('dispatch', '_run_dispatch'),
-      ('combine', '_run_combine'),
-  )
-  def test_einsum(self, run_method):
-    # (G=2, S=3, E=2, C=2).
-    combine_weights = jnp.asarray([
-        [[[.0, .0], [.7, .0]],
-         [[.7, .0], [.0, .0]],
-         [[.0, .3], [.0, .7]]],
-        [[[.7, .0], [.0, .3]],
-         [[.0, .7], [.0, .0]],
-         [[.0, .0], [.3, .0]]],
-    ], dtype=jnp.float32)
-    dispatcher = moe.EinsumDispatcher(
-        combine_weights=combine_weights,
-        einsum_precision=jax.lax.Precision.HIGHEST)
-    getattr(self, run_method)(dispatcher)
-
-  @parameterized.named_parameters(
-      ('dispatch', '_run_dispatch'),
-      ('combine', '_run_combine'),
-  )
-  def test_indices(self, run_method):
-    # (G=2, S=3, K=2, 2). Note: 9's are meaningless since E = 2, C = 2.
-    indices = jnp.asarray([
-        [[[1, 0], [9, 9]], [[0, 0], [9, 9]], [[1, 1], [0, 1]]],
-        [[[0, 0], [1, 1]], [[0, 1], [9, 9]], [[9, 9], [1, 0]]],
-    ], dtype=jnp.int32)
-    # (G=2, S=3, K=2). Each item uses weight 0.7 for the top-1 and 0.3 for the
-    # top-2 expert.
-    combine_weights = jnp.ones((2, 3, 2), dtype=jnp.float32)
-    combine_weights = combine_weights * jnp.asarray([[[.7, .3]]])
-    dispatcher = moe.ExpertIndicesDispatcher(
-        indices=indices,
-        combine_weights=combine_weights,
-        num_experts=2,
-        capacity=2,
-        einsum_precision=jax.lax.Precision.HIGHEST)
-    getattr(self, run_method)(dispatcher)
 
   def test_bfloat16_dispatcher(self):
     # We mock a base dispatcher that simply check that the type of the passed
@@ -139,6 +67,109 @@ class DispatcherTest(parameterized.TestCase):
     x = jnp.zeros((5, 4, 3), dtype=jnp.float32)
     self.assertEqual(bfloat16_dispatcher.dispatch(x).dtype, jnp.float32)
     self.assertEqual(bfloat16_dispatcher.combine(x).dtype, jnp.float32)
+
+  @classmethod
+  def _run_dispatcher_test(cls, dispatcher, expected_dispatch,
+                           expected_combine):
+    data = jnp.asarray([
+        [[1, 1, 1, 1], [2, 2, 2, 2], [3, 3, 3, 3]],
+        [[4, 4, 4, 4], [5, 5, 5, 5], [6, 6, 6, 6]],
+    ], jnp.float32)
+    dispatch = dispatcher.dispatch(data)
+    np.testing.assert_array_almost_equal(dispatch, expected_dispatch)
+    combine = dispatcher.combine(dispatch)
+    np.testing.assert_array_almost_equal(combine, expected_combine)
+
+  @classmethod
+  def _run_dispatcher_test_num_experts_divides_num_groups(cls, dispatcher):
+    expected_dispatch = jnp.asarray([
+        [[2, 2, 2, 2], [3, 3, 3, 3], [4, 4, 4, 4], [5, 5, 5, 5]],
+        [[1, 1, 1, 1], [3, 3, 3, 3], [6, 6, 6, 6], [4, 4, 4, 4]],
+    ], dtype=jnp.float32)
+    expected_combine = jnp.asarray([
+        [[1 * .7, 1 * .7, 1 * .7, 1 * .7],
+         [2 * .7, 2 * .7, 2 * .7, 2 * .7],
+         [3 * 1., 3 * 1., 3 * 1., 3 * 1.]],
+        [[4 * 1., 4 * 1., 4 * 1., 4 * 1.],
+         [5 * .7, 5 * .7, 5 * .7, 5 * .7],
+         [6 * .3, 6 * .3, 6 * .3, 6 * .3]],
+    ], dtype=jnp.float32)
+    cls._run_dispatcher_test(dispatcher, expected_dispatch, expected_combine)
+
+  @classmethod
+  def _run_dispatcher_test_num_groups_divides_num_experts(cls, dispatcher):
+    expected_dispatch = jnp.asarray([
+        [[2, 2, 2, 2], [4, 4, 4, 4]],
+        [[1, 1, 1, 1], [6, 6, 6, 6]],
+        [[3, 3, 3, 3], [4, 4, 4, 4]],
+        [[3, 3, 3, 3], [5, 5, 5, 5]],
+    ], dtype=jnp.float32)
+    expected_combine = jnp.asarray([
+        [[1 * .7, 1 * .7, 1 * .7, 1 * .7],
+         [2 * .7, 2 * .7, 2 * .7, 2 * .7],
+         [3 * 1., 3 * 1., 3 * 1., 3 * 1.]],
+        [[4 * 1., 4 * 1., 4 * 1., 4 * 1.],
+         [5 * .7, 5 * .7, 5 * .7, 5 * .7],
+         [6 * .3, 6 * .3, 6 * .3, 6 * .3]],
+    ])
+    cls._run_dispatcher_test(dispatcher, expected_dispatch, expected_combine)
+
+  @parameterized.named_parameters(
+      ('num_experts_divides_num_groups',
+       '_run_dispatcher_test_num_experts_divides_num_groups',
+       # (G=2, S=3, E=2, C=2).
+       [
+           [[[.0, .0], [.7, .0]], [[.7, .0], [.0, .0]], [[.0, .3], [.0, .7]]],
+           [[[.7, .0], [.0, .3]], [[.0, .7], [.0, .0]], [[.0, .0], [.3, .0]]],
+       ]),
+      ('num_groups_divides_num_experts',
+       '_run_dispatcher_test_num_groups_divides_num_experts',
+       # (G=2, S=3, E=4, C=1).
+       [
+           [[[.0], [.7], [.0], [.0]],
+            [[.7], [.0], [.0], [.0]],
+            [[.0], [.0], [.7], [.3]]],
+           [[[.7], [.0], [.3], [.0]],
+            [[.0], [.0], [.0], [.7]],
+            [[.0], [.3], [.0], [.0]]],
+       ]),
+  )
+  def test_einsum(self, test_fn, combine_weights):
+    combine_weights = jnp.asarray(combine_weights, dtype=jnp.float32)
+    dispatcher = moe.EinsumDispatcher(
+        combine_weights=combine_weights,
+        einsum_precision=jax.lax.Precision.HIGHEST)
+    getattr(self, test_fn)(dispatcher)
+
+  @parameterized.named_parameters(
+      ('num_experts_divides_num_groups',
+       '_run_dispatcher_test_num_experts_divides_num_groups',
+       2, 2,
+       # (G=2, S=3, K=2, 2). Note: 9's are meaningless since E, C < 9.
+       [
+           [[[1, 0], [9, 9]], [[0, 0], [9, 9]], [[1, 1], [0, 1]]],
+           [[[0, 0], [1, 1]], [[0, 1], [9, 9]], [[9, 9], [1, 0]]],
+       ]),
+      ('num_groups_divides_num_experts',
+       '_run_dispatcher_test_num_groups_divides_num_experts',
+       4, 1,
+       # (G=2, S=3, K=2, 2). Note: 9's are meaningless since E, C < 9.
+       [
+           [[[1, 0], [9, 9]], [[0, 0], [9, 9]], [[2, 0], [3, 0]]],
+           [[[0, 0], [2, 0]], [[3, 0], [9, 9]], [[9, 9], [1, 0]]],
+       ]),
+  )
+  def test_indices(self, test_fn, num_experts, capacity, indices):
+    indices = jnp.asarray(indices, dtype=jnp.int32)
+    combine_weights = jnp.asarray([[[.7, .3]]], dtype=jnp.float32)
+    combine_weights = jnp.tile(combine_weights, (2, 3, 1))
+    dispatcher = moe.ExpertIndicesDispatcher(
+        indices=indices,
+        combine_weights=combine_weights,
+        num_experts=num_experts,
+        capacity=capacity,
+        einsum_precision=jax.lax.Precision.HIGHEST)
+    getattr(self, test_fn)(dispatcher)
 
 
 class GetTopExpertsPerItemDispatcherTest(parameterized.TestCase):
@@ -319,7 +350,7 @@ class SparseMoeSpmdLayerTest(parameterized.TestCase):
 
   @classmethod
   def _generate_data(cls, batch_size, group_size, partition_spec):
-    err_msg = f'group_size must divide batch_size ({group_size} vs. {batch_size})'
+    err_msg = f'({group_size=} does not divide {batch_size=})'
     assert batch_size % group_size == 0, err_msg
     # Creates batch_size items, each with a single dimension = 1.
     x = 10 * jnp.arange(1, 1 + batch_size, dtype=jnp.float32)
