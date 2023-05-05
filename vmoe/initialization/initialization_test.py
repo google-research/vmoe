@@ -12,6 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import io
+import json
 import os
 from unittest import mock
 # Trick to simulate 4 devices without the need of TPUs for testing.
@@ -91,6 +93,62 @@ class _BaseInitializeTest(parameterized.TestCase):
             'C': self.target['foo']['C'],
         }
     })
+
+
+class InitializeFromOrbaxTest(_BaseInitializeTest):
+
+  def setUp(self):
+    super().setUp()
+    # Create checkpoint directory structure.
+    self.directory = self.create_tempdir().full_path
+    for name in ('a', 'b', 'c'):
+      zarray = self.create_tempfile(
+          os.path.join(self.directory, 'foo', name, '.zarray')).full_path
+      with io.open(zarray, 'wt') as fp:
+        json.dump({'shape': self.ckpt['foo'][name].shape,
+                   'dtype': self.ckpt['foo'][name].dtype.str}, fp)
+    # Mock the AsyncCheckpointer class.
+    self.mock_async_checkpointer = self.enter_context(
+        mock.patch.object(initialization.orbax_checkpoint,
+                          'AsyncCheckpointer'))
+    # Mock the structure() method.
+    self.mock_structure = self.mock_async_checkpointer.return_value.structure
+    self.mock_structure.return_value = {
+        'foo': {
+            name: 'PLACEHOLDER://' + os.path.join(self.directory, 'foo', name)
+            for name in ('a', 'b', 'c')
+        }
+    }
+    # Mock the restore() method.
+    self.mock_restore = self.mock_async_checkpointer.return_value.restore
+    self.mock_restore.return_value = self.ckpt
+
+  @parameterized.named_parameters(
+      ('_no_axis_resources_regexes', None),
+      ('_axis_resources_regexes', [('a', ('d',)), ('b', ('d',)), ('c', ())]),
+  )
+  def test(self, axis_resources_regexes):
+    output = initialization.initialize_from_orbax(
+        target=self.target, directory=self.directory, mesh=self.mesh,
+        rules=self.rules, axis_resources_regexes=axis_resources_regexes,
+        raise_if_target_unmatched=False)
+    chex.assert_trees_all_equal_structs(output, self.expected)
+    chex.assert_trees_all_equal_shapes(output, self.expected)
+    # Regardless of the sharding used when copying the checkpoint params to
+    # devices, the output sharding has to be equivalent to the one specified
+    # in the output tree.
+    assert_trees_all_equivalent_sharding(output, self.expected)
+    np.testing.assert_allclose(output['foo']['A'], self.expected['foo']['A'])
+    np.testing.assert_allclose(output['foo']['B'], self.expected['foo']['B'])
+    # Test that restore is called only once with the right args and kwargs.
+    self.mock_restore.assert_called_once()
+    restore_args = self.mock_restore.call_args_list[0].args
+    restore_kwargs = self.mock_restore.call_args_list[0].kwargs
+    self.assertEqual(restore_args, (self.directory,))
+    self.assertIn('restore_args', restore_kwargs)
+    self.assertTrue(all([
+        isinstance(v, initialization.orbax_checkpoint.ArrayRestoreArgs)
+        for v in jax.tree_util.tree_leaves(restore_kwargs)]))
 
 
 class InitializeFromVitTest(_BaseInitializeTest):

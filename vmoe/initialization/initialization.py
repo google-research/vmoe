@@ -13,11 +13,17 @@
 # limitations under the License.
 
 """Functions to initialize a TrainState from pre-trained checkpoints."""
+import json
 import multiprocessing.pool
+import os
 from typing import Any, Optional, Union
 
+import flax.serialization
+import flax.traverse_util
 import jax
 from jax.experimental import pjit
+from orbax import checkpoint as orbax_checkpoint
+import tensorflow as tf
 from vit_jax import checkpoint as vit_jax_checkpoint
 from vmoe import checkpoints as vmoe_checkpoint
 from vmoe import partitioning
@@ -32,7 +38,88 @@ Rules = Union[mapping.Rules, mapping.UnparsedRules]
 ShapeDtypeStruct = jax.ShapeDtypeStruct
 ThreadPool = multiprocessing.pool.ThreadPool
 
-__all__ = ['initialize_from_vit', 'initialize_from_vmoe']
+__all__ = [
+    'initialize_from_orbax',
+    'initialize_from_vit',
+    'initialize_from_vmoe',
+]
+
+
+def initialize_from_orbax(
+    *,
+    target: PyTree,
+    directory: str,
+    rules: Rules,
+    mesh: Mesh,
+    axis_resources_regexes: Optional[partitioning.AxisResourcesRegexes] = None,
+    **map_state_dict_kwargs) -> PyTree:
+  """Initializes the target from an Orbax checkpoint.
+
+  Args:
+    target: PyTree to initialize. This should not be used again once this
+      function returns. Use the returned object instead.
+    directory: Directory containing the checkpoint to use for initialization.
+    rules: Rules used for mapping variable names from the checkpoint to the
+      target.
+    mesh: Device mesh used to partition the target PyTree.
+    axis_resources_regexes: Optional regexes matching the checkpoint array names
+      and specifying how the array read from the checkpoint is partitioned.
+      Notice that this is different from the target partitioning, which is
+      specified in the target leaves (jax.Array or jax.ShapeDtypeStruct).
+    **map_state_dict_kwargs: Additional keyword arguments passed to the
+      `mapping.map_state_dict` function.
+
+  Returns:
+    A PyTree as the input `target` with (some of) the values loaded from the
+    checkpoint.
+  """
+
+  # Orbax doesn't provide a way of restoring the shape and dtype of the arrays,
+  # so we must use our own code to read the .zarray files that contain that
+  # information.
+  def _get_shape_dtype_struct(item):
+    k, v = item
+    if isinstance(v, str) and v.startswith('PLACEHOLDER://'):
+      v = v[len('PLACEHOLDER://'):]
+      with tf.io.gfile.GFile(os.path.join(directory, v, '.zarray'), 'r') as fp:
+        zarray = json.load(fp)
+        dtype = zarray['dtype']
+        shape = tuple(zarray['shape'])
+        return k, jax.ShapeDtypeStruct(shape, jax.numpy.dtype(dtype))
+    return k, v
+
+  ckptr = orbax_checkpoint.AsyncCheckpointer(
+      orbax_checkpoint.PyTreeCheckpointHandler())
+
+  # Restore the structure of the checkpoint.
+  structure = ckptr.structure(directory)
+  # Restore shape and dtype of all arrays. We use a large thread pool since
+  # there are typically hundreds/thousands of small files to read (.zarray).
+  flat_structure = flax.traverse_util.flatten_dict(
+      flax.serialization.to_state_dict(structure),
+      sep='/', keep_empty_nodes=True)
+  flat_structure = dict(ThreadPool(4096).map(_get_shape_dtype_struct,
+                                             flat_structure.items()))
+  structure = flax.serialization.from_state_dict(
+      structure, flax.traverse_util.unflatten_dict(flat_structure, sep='/'))
+  # Get the PartitionSpec corresponding to the arrays to restore, according to
+  # the given regular expressions.
+  axis_resources = partitioning.tree_axis_resources_from_regexes(
+      tree=structure, axis_resources_regexes=axis_resources_regexes or ())
+
+  def _array_restore_args(value, spec):
+    if isinstance(value, jax.ShapeDtypeStruct):
+      sharding = NamedSharding(mesh, spec)
+      return orbax_checkpoint.ArrayRestoreArgs(
+          dtype=value.dtype, sharding=sharding, global_shape=value.shape,
+          lazy=True)
+    else:
+      return orbax_checkpoint.RestoreArgs(lazy=True)
+
+  restore_args = jax.tree_util.tree_map(
+      _array_restore_args, structure, axis_resources)
+  ckpt = ckptr.restore(directory, restore_args=restore_args)
+  return mapping.map_state_dict(ckpt, target, rules, **map_state_dict_kwargs)
 
 
 def initialize_from_vit(

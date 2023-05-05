@@ -13,6 +13,7 @@
 # limitations under the License.
 
 """Tests for mapping."""
+from unittest import mock
 
 from absl.testing import absltest
 from absl.testing import parameterized
@@ -42,6 +43,16 @@ class LayerB(nn.Module):
 
 
 class MappingTest(absltest.TestCase):
+
+  def test_lazy_value(self):
+    lazy_value = mock.create_autospec(mapping.LazyValue, instance=True)
+    lazy_value.get.return_value = jnp.zeros((1,))
+    source = {'a': lazy_value}
+    target = {'b': jnp.ones((1,))}
+    rules = [('a', 'b')]
+    output = mapping.map_state_dict(source, target, rules)
+    self.assertSetEqual(set(output.keys()), {'b'})
+    np.testing.assert_allclose(output['b'], np.zeros((1,)))
 
   def test_linen_variables(self):
     x = np.random.normal(size=(8, 3)).astype(np.float32)
