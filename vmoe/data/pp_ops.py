@@ -20,6 +20,7 @@ as a dictionary of tensors.
 Most of these were originally implemented by: Lucas Beyer, Alex Kolesnikov,
 Xiaohua Zhai and other collaborators from Google Brain Zurich.
 """
+from flax import traverse_util
 import tensorflow.compat.v1 as tf
 import tensorflow.compat.v2 as tf2
 
@@ -137,6 +138,10 @@ def decode_jpeg_and_inception_crop(resize_size=None, area_min=5, area_max=100):
     return image
 
   return _inception_crop
+
+
+def flatten():
+  return lambda data: traverse_util.flatten_dict(data, sep='/')
 
 
 @InKeyOutKey()

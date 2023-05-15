@@ -43,11 +43,21 @@ class SingleProcessPeriodicAction:
 class ReportProgress(periodic_actions.ReportProgress):
   """Reports training progress, including metrics."""
 
+  def __init__(self, *, process_index: Optional[int] = 0, **kwargs):
+    self._process_index = process_index
+    super().__init__(**kwargs)
+
   def __call__(self, step: int, t: Optional[float] = None, **kwargs) -> bool:
     if super().__call__(step, t):
       self._apply_extra(step, t, **kwargs)
       return True
     return False
+
+  def _should_trigger(self, step: int, t: float) -> bool:
+    if (self._process_index is not None and
+        jax.process_index() != self._process_index):
+      return False
+    return super()._should_trigger(step, t)
 
   def _apply_extra(self, step: int, t: float, scalar_metrics: Dict[str, Any]):
     if self._writer is not None:

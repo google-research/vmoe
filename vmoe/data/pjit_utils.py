@@ -15,7 +15,7 @@
 """Module with input pipeline functions specific for pjit."""
 import collections
 import itertools
-from typing import Any, Iterator, List, Optional, Sequence
+from typing import Any, Iterator, List, Optional, Sequence, Union
 
 from absl import logging
 from clu.data import dataset_iterator
@@ -29,7 +29,7 @@ PyTree = Any
 
 
 def get_dataset_shape_dtype_struct(
-    iterator: dataset_iterator.DatasetIterator,
+    iterator: Union[tf.data.Dataset, dataset_iterator.DatasetIterator],
     mesh: Optional[Mesh] = None,
 ) -> PyTree:
   """Returns the jax.ShapeDtypeStruct."""
