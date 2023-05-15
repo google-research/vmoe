@@ -83,8 +83,10 @@ class MlpMoeBlock(nn.Module):
                                                        self.deterministic)
     # Create instance of the router class.
     router_cls = router_kwargs.pop('name', 'NoisyTopExpertsPerItemRouter')
-    router_cls = getattr(routing, router_cls)
-    return router_cls(dtype=self.dtype, name='Router', **router_kwargs)
+    router_cls, router_args, router_kwargs2 = vmoe.utils.parse_call(
+        router_cls, default_module=routing)
+    return router_cls(*router_args, dtype=self.dtype, name='Router',
+                      **(router_kwargs2 | router_kwargs))
 
   @nn.nowrap
   def create_split_rngs(self) -> Mapping[str, bool]:
