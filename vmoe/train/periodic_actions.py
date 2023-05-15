@@ -59,8 +59,11 @@ class ReportProgress(periodic_actions.ReportProgress):
       return False
     return super()._should_trigger(step, t)
 
-  def _apply_extra(self, step: int, t: float, scalar_metrics: Dict[str, Any]):
+  def _apply_extra(
+      self, step: int, t: float, scalar_metrics: Optional[Dict[str, Any]] = None
+  ):
     if self._writer is not None:
+      scalar_metrics = scalar_metrics or {}
       scalar_metrics = {
           '/'.join(k): float(v)
           for k, v in flax.traverse_util.flatten_dict(scalar_metrics).items()
