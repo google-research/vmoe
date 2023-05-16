@@ -73,9 +73,6 @@ TrainStepFn = train_state_module.TrainStepFn
 TreeSummarizer = tree_summarizer.TreeSummarizer
 
 
-_getattr = getattr  # Alias of _getattr so that we can mock it in tests.
-
-
 def accumulate_gradients_and_metrics(grad_and_metrics_fn, microsteps: int):
   """Wraps a function that computes gradients and metrics to use microsteps.
 
@@ -219,8 +216,9 @@ def create_flax_model(*, config: Dict[str, Any],
     raise KeyError('The model config must have a "name" field.')
   if isinstance(config, ml_collections.ConfigDict):
     config = config.to_dict()
-  model_cls = _getattr(models, config.pop('name'))
-  return model_cls(deterministic=deterministic, **config)
+  model_cls = config.pop('name')
+  model_cls, args, kwargs = utils.parse_call(model_cls, models)
+  return model_cls(*args, **kwargs, **config, deterministic=deterministic)
 
 
 def create_profile_hook(*, workdir: str, **kwargs):

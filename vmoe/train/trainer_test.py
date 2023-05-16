@@ -40,10 +40,10 @@ VALID_KEY = trainer.input_pipeline.VALID_KEY
 
 class CreateFlaxModelTest(absltest.TestCase):
 
-  @mock.patch.object(trainer, '_getattr')
-  def test_success(self, mock_getattr):
+  @mock.patch.object(trainer.utils, 'parse_call')
+  def test_success(self, mock_parse_class):
     foo_cls = mock.MagicMock()
-    mock_getattr.return_value = foo_cls
+    mock_parse_class.return_value = (foo_cls, (), {})
     config = ml_collections.ConfigDict({'name': 'foo', 'arg': 'bar'})
     _ = trainer.create_flax_model(config=config, deterministic=False)
     foo_cls.assert_called_once_with(deterministic=False, arg='bar')
