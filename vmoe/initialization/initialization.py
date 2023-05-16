@@ -22,6 +22,7 @@ import flax.serialization
 import flax.traverse_util
 import jax
 from jax.experimental import pjit
+import numpy as np
 from orbax import checkpoint as orbax_checkpoint
 import tensorflow as tf
 from vit_jax import checkpoint as vit_jax_checkpoint
@@ -153,6 +154,14 @@ def initialize_from_vit(
   """
   # Get the parameters from the checkpoint.
   ckpt = vit_jax_checkpoint.load(filepath)
+  # Numpy saves bfloat16 as a void type. Fix that.
+  def fix_dtype(x):
+    if hasattr(x, 'dtype') and x.dtype.type is np.void:
+      assert x.itemsize == 2, 'Unknown dtype!'
+      return x.view(jax.numpy.bfloat16)
+    else:
+      return x
+  ckpt = jax.tree_util.tree_map(fix_dtype, ckpt)
   # Copy the checkpoint arrays from host to device, using the partitioning given
   # by axis_resources_regexes. If None, the parameters are simply fully
   # replicated across all devices.
