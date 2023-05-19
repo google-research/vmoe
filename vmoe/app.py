@@ -93,5 +93,6 @@ def _main(argv, *, main) -> None:
   mesh = partitioning.get_auto_logical_mesh(FLAGS.config.num_expert_partitions,
                                             jax.devices())
   partitioning.log_logical_mesh(mesh)
-  with mesh:
-    main(FLAGS.config, FLAGS.workdir, mesh, writer)
+  with metric_writers.ensure_flushes(writer):
+    with mesh:
+      main(FLAGS.config, FLAGS.workdir, mesh, writer)

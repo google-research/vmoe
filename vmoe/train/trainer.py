@@ -739,25 +739,24 @@ def train_and_evaluate(config: ml_collections.ConfigDict, workdir: str,
   # state at initialization.
   if init_step == 0:
     checkpoint_hook(init_step, state=train_state, iterator=tr_iter)
-  with metric_writers.ensure_flushes(writer):
-    # Explicitly compile train_step here and report the compilation time.
-    t0 = time.time()
-    train_step_pjit = train_step_pjit.lower(
-        train_state,
-        datataset_element_shape_dtype['image'],
-        datataset_element_shape_dtype['labels']).compile()
-    t1 = time.time()
-    writer.write_scalars(init_step + 1, {'train/compile_secs': t1 - t0})
-    for step, batch in zip(range(init_step + 1, train_steps + 1), tr_iter):
-      profile_hook(step)
-      with jax.profiler.StepTraceAnnotation('train', step_num=step):
-        train_state, metrics = train_step_pjit(train_state, batch['image'],
-                                               batch['labels'])
-      progress_hook(
-          step, scalar_metrics={f'train/{k}': v for k, v in metrics.items()})
-      checkpoint_hook(step, state=train_state, iterator=tr_iter)
-      evaluation_hook(step, params=train_state.params)
-      fewshot_hook(step, variables={'params': train_state.params})
+  # Explicitly compile train_step here and report the compilation time.
+  t0 = time.time()
+  train_step_pjit = train_step_pjit.lower(
+      train_state,
+      datataset_element_shape_dtype['image'],
+      datataset_element_shape_dtype['labels']).compile()
+  t1 = time.time()
+  writer.write_scalars(init_step + 1, {'train/compile_secs': t1 - t0})
+  for step, batch in zip(range(init_step + 1, train_steps + 1), tr_iter):
+    profile_hook(step)
+    with jax.profiler.StepTraceAnnotation('train', step_num=step):
+      train_state, metrics = train_step_pjit(train_state, batch['image'],
+                                             batch['labels'])
+    progress_hook(
+        step, scalar_metrics={f'train/{k}': v for k, v in metrics.items()})
+    checkpoint_hook(step, state=train_state, iterator=tr_iter)
+    evaluation_hook(step, params=train_state.params)
+    fewshot_hook(step, variables={'params': train_state.params})
   multihost_utils.sync_devices('training:completed')
   logging.info('Training completed.')
 
