@@ -172,8 +172,7 @@ class FewShotPeriodicActionTest(absltest.TestCase):
     call_args_list = mock_metric_writer.write_scalars.call_args_list
     self.assertLen(call_args_list, 2)
     expected_metrics = {
-        '0/foo-seed-0/2shot': mock.ANY,
-        '0/foo-seed-1/2shot': mock.ANY,
+        '0/foo/2shot': mock.ANY,
         'fewshot/2shot_best_l2': mock.ANY,
         'fewshot/5shot_best_l2': mock.ANY,
         'fewshot/foo-seed-0/duration_secs': mock.ANY,

@@ -13,14 +13,18 @@
 # limitations under the License.
 
 """Most common few-shot eval configuration."""
-
+from typing import Optional
 import ml_collections
 
 
-def get_fewshot(*,
-                batch_size: int,
-                resize_resolution: int = 256,
-                target_resolution: int = 224) -> ml_collections.ConfigDict:
+def get_fewshot(
+    *,
+    batch_size: int,
+    resize_resolution: int = 256,
+    target_resolution: int = 224,
+    every_steps: Optional[int] = 25_000,
+    seeds_per_step: int = 1,
+) -> ml_collections.ConfigDict:
   """Returns the standard configuration for few-shot evaluation."""
   config = ml_collections.ConfigDict()
   # Datasets to evaluate.
@@ -46,10 +50,13 @@ def get_fewshot(*,
   config.l2_regs = [2.**i for i in range(-10, 20)]
   # The accuracy of this task is shown as '0/fewshot/imagenet/10shot'.
   config.main_task = ('imagenet', 10)
-  # FewShotPeriodicAction options.
-  config.every_steps = 25_000
   # Override num_classes argument passed to the model constructor, so that
   # few-shot representations are the pre-logit activations.
   config.model_overrides = ml_collections.ConfigDict()
   config.model_overrides.num_classes = None
+  # FewShotPeriodicAction options.
+  if every_steps:
+    config.every_steps = every_steps
+  if seeds_per_step:
+    config.seeds_per_step = seeds_per_step
   return config

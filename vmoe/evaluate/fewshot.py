@@ -108,6 +108,9 @@ class FewShotPeriodicAction(periodic_actions.PeriodicCallback):
       prefetch_to_device: Optional number of batches prefetched to the devices.
       **dataset_kwargs: Additional kwargs passed to the dataset.
     """
+    # TODO(jpuigcerver): This is a hack. Split this class into a evaluator and
+    # a periodic action that uses that evaluator.
+    self.last_metrics = None
     callback = self._make_callback_fn(
         # Used to obtain the representation/labels/mask of a batch of images.
         representation_fn=_make_fewshot_step_pjit(
@@ -134,8 +137,7 @@ class FewShotPeriodicAction(periodic_actions.PeriodicCallback):
         execute_async=False,
         pass_step_and_time=True)
 
-  @classmethod
-  def _make_callback_fn(cls, *, representation_fn, shots, l2_regs,
+  def _make_callback_fn(self, *, representation_fn, shots, l2_regs,
                         datasets_info, prefetch_to_device,
                         rng_keys, seed, seed_fold_in_step, seeds_per_step,
                         metric_writer, report_progress, report_progress_name,
@@ -205,13 +207,14 @@ class FewShotPeriodicAction(periodic_actions.PeriodicCallback):
         name, shot = main_task
         if seeds_per_step == 1:
           accuracy = all_results[name][shot, best_l2[shot]]
-          metrics[f'{main_task_prefix}/{name}/{shot}shot'] = accuracy
         else:
-          for sub_seed in range(seeds_per_step):
-            seed_name = f'{name}-seed-{sub_seed}'
-            seed_acc = all_results[seed_name][shot, best_l2[shot]]
-            metrics[f'{main_task_prefix}/{seed_name}/{shot}shot'] = seed_acc
+          accuracy = sum(
+              all_results[f'{name}-seed-{sub_seed}'][shot, best_l2[shot]]
+              for sub_seed in range(seeds_per_step)
+          ) / seeds_per_step
+        metrics[f'{main_task_prefix}/{name}/{shot}shot'] = accuracy
       metric_writer.write_scalars(step, metrics)
+      self.last_metrics = metrics
 
     if report_progress is None:
       return callback_fn
