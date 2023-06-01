@@ -330,10 +330,10 @@ class RestoreOrCreateTrainStateTest(absltest.TestCase):
         prefix=prefix, initialize_fn=self.initialize_fn,
         axis_resources_regexes=[], mesh=self.mesh,
         initialization_kwargs={})
-    chex.assert_trees_all_close(train_state.params, {
+    chex.assert_trees_all_close(train_state.params, trainer.flax.core.freeze({
         'a': 1 * np.ones((5,), dtype=np.float32),
         'b': 2 * np.ones((10,), dtype=np.float32),
-    })
+    }))
     chex.assert_trees_all_equal(train_state.step, 0)
 
   @mock.patch.object(trainer.checkpoints,
