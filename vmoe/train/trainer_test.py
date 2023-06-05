@@ -21,6 +21,7 @@ from absl.testing import absltest
 from absl.testing import parameterized
 import chex
 import clu.data
+import flax.core
 import flax.linen as nn
 import jax
 from jax.experimental import pjit
@@ -330,10 +331,10 @@ class RestoreOrCreateTrainStateTest(absltest.TestCase):
         prefix=prefix, initialize_fn=self.initialize_fn,
         axis_resources_regexes=[], mesh=self.mesh,
         initialization_kwargs={})
-    chex.assert_trees_all_close(train_state.params, trainer.flax.core.freeze({
+    chex.assert_trees_all_close(flax.core.unfreeze(train_state.params), {
         'a': 1 * np.ones((5,), dtype=np.float32),
         'b': 2 * np.ones((10,), dtype=np.float32),
-    }))
+    })
     chex.assert_trees_all_equal(train_state.step, 0)
 
   @mock.patch.object(trainer.checkpoints,
@@ -400,7 +401,7 @@ class RestoreOrCreateTrainStateTest(absltest.TestCase):
         prefix='/foo/ckpt_1', initialize_fn=self.initialize_fn,
         axis_resources_regexes=[], mesh=self.mesh,
         initialization_kwargs={'foo': 'bar'})
-    chex.assert_trees_all_close(train_state.params, {
+    chex.assert_trees_all_close(flax.core.unfreeze(train_state.params), {
         'a': 1 * np.ones((5,), dtype=np.float32),
         'b': 5 * np.ones((10,), dtype=np.float32),
     })
