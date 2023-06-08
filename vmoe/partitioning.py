@@ -402,7 +402,7 @@ def tree_axis_resources_from_regexes(
     if value is flax.traverse_util.empty_node:
       return value
     for regex, partition_spec in axis_resources_regexes:
-      if regex.search(key) and np.product(value.shape) > 1:
+      if regex.search(key) and np.prod(value.shape) > 1:
         return partition_spec
     return PartitionSpec()
 
