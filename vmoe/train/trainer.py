@@ -701,11 +701,12 @@ def train_and_evaluate(config: ml_collections.ConfigDict, workdir: str,
 
   train_step_pjit = pjit.pjit(
       fun=train_step_fn,
-      out_axis_resources=(
+      out_shardings=(
           jax.tree_util.tree_map(lambda x: x.sharding, train_state),
           None,
       ),
-      donate_argnums=(0, 1, 2))
+      donate_argnums=(0, 1, 2),
+  )
 
   # Setup hooks.
   profile_hook = create_profile_hook(

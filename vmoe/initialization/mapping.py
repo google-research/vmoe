@@ -215,8 +215,9 @@ def _flat_state_dict_mapping_apply(
       fn,
       # No in_axis_resources. We assume that jax.Array is used, which includes
       # the specification of the partitioning.
-      out_axis_resources=out_axis_resources,
-      donate_argnums=(0,))(txs_flat)
+      out_shardings=out_axis_resources,
+      donate_argnums=(0,),
+  )(txs_flat)
   target_flat.update(output)
 
   return target_flat

@@ -356,7 +356,7 @@ class RestoreOrCreateTrainStateTest(absltest.TestCase):
         })
         return train_state
       with self.mesh:
-        return pjit.pjit(f, out_axis_resources=None)()
+        return pjit.pjit(f, out_shardings=None)()
     mock_restore_checkpoint.side_effect = restore_checkpoint_side_effect
     # Call restore_or_create_train_state and check that the outputs are the
     # expected ones.
@@ -380,8 +380,10 @@ class RestoreOrCreateTrainStateTest(absltest.TestCase):
       # Create value for parameter 'b', simulating that this is initialized from
       # an existing checkpoint.
       with self.mesh:
-        b = pjit.pjit(lambda: 5 * jnp.ones((10,), dtype=jnp.float32),
-                      out_axis_resources=PartitionSpec())()
+        b = pjit.pjit(
+            lambda: 5 * jnp.ones((10,), dtype=jnp.float32),
+            out_shardings=PartitionSpec(),
+        )()
       # Create "empty" train state, containing only the expected shape and
       # sharding of the arrays.
       train_state = jax.eval_shape(self.initialize_fn)
