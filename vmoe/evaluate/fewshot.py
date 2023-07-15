@@ -337,14 +337,15 @@ def _make_fewshot_step_pjit(
       rngs={key: PartitionSpec() for key in rng_keys})
   fewshot_step_pjit = jax.experimental.pjit.pjit(
       functools.partial(_fewshot_step, apply_fn=apply_fn),
-      out_axis_resources=(
-          state_axis_resources,   # state
+      out_shardings=(
+          state_axis_resources,  # state
           # Note: we dont partition these so that each host gets a copy of all
           # data.
-          PartitionSpec(),        # features
-          PartitionSpec(),        # label
-          PartitionSpec(),        # valid
-      ))
+          PartitionSpec(),  # features
+          PartitionSpec(),  # label
+          PartitionSpec(),  # valid
+      ),
+  )
   return fewshot_step_pjit
 
 

@@ -457,7 +457,8 @@ class SaveAndRestoreTest(absltest.TestCase):
     with Mesh(np.asarray(jax.devices()), 'd'):
       tree_zeros = pjit.pjit(
           fun=lambda tree: jax.tree_util.tree_map(jnp.zeros_like, tree),
-          out_axis_resources=PartitionSpec())(tree)
+          out_shardings=PartitionSpec(),
+      )(tree)
     restored_tree = partitioned.restore_checkpoint(prefix, tree_zeros)
     chex.assert_trees_all_close(restored_tree, tree)
 
