@@ -157,7 +157,7 @@ class EvaluateMultipleDatasets(periodic_actions.PeriodicCallback):
 
     @functools.partial(
         pjit.pjit,
-        in_axis_resources=(), out_axis_resources=None, static_argnums=(0,))
+        in_shardings=(), out_shardings=None, static_argnums=(0,))
     def make_eval_state_pjit(seed):
       rngs = utils.make_rngs(rng_keys, seed)
       return EvalState(

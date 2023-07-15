@@ -79,7 +79,6 @@ _IDENTITY_RULE = _rules.RegexRule(pattern=re.compile('^(.*)$'),
                                   replacement=r'\1')
 _SIGNED_FLOAT_RE = re.compile(
     r'([-+]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][-+]?\d+)?)')
-_UNSPECIFIED = pjit._UNSPECIFIED  # pylint: disable=protected-access
 
 __all__ = ['map_state_dict', 'Rules', 'UnparsedRules', 'Transformation']
 

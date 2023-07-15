@@ -149,8 +149,8 @@ class FewShotPeriodicAction(periodic_actions.PeriodicCallback):
           size=prefetch_to_device)
 
     @functools.partial(
-        jax.experimental.pjit.pjit, in_axis_resources=(None, None, None),
-        out_axis_resources=None)
+        jax.experimental.pjit.pjit, in_shardings=(None, None, None),
+        out_shardings=None)
     def make_fewshot_state_pjit(seed, sub_seed, step):
       if rng_keys:
         rng = jax.random.PRNGKey(seed)
