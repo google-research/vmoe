@@ -131,7 +131,7 @@ class GetCombineWeightsTest(parameterized.TestCase):
       }),
   )
   def test(self, intermediates, expected_output):
-    chex.assert_tree_all_close(
+    chex.assert_trees_all_close(
         jax.jit(restore.get_combine_weights)(intermediates),
         expected_output)
 
