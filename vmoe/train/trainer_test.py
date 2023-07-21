@@ -242,7 +242,7 @@ class MakeCreateTrainStateFnTest(absltest.TestCase):
         extra_rng_keys=('foo',))
     train_state = train_state_init_fn()
     chex.assert_trees_all_equal_shapes_and_dtypes(
-        train_state.params.unfreeze(),
+        flax.core.unfreeze(train_state.params),
         {'kernel': jax.ShapeDtypeStruct((3, 3, 3, 16), jnp.float32),
          'bias': jax.ShapeDtypeStruct((16,), jnp.float32)})
     self.assertSetEqual(set(train_state.rngs.keys()), {'foo'})
