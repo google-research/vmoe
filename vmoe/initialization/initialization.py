@@ -112,10 +112,9 @@ def initialize_from_orbax(
     if isinstance(value, jax.ShapeDtypeStruct):
       sharding = NamedSharding(mesh, spec)
       return orbax_checkpoint.ArrayRestoreArgs(
-          dtype=value.dtype, sharding=sharding, global_shape=value.shape,
-          lazy=True)
+          dtype=value.dtype, sharding=sharding, global_shape=value.shape)
     else:
-      return orbax_checkpoint.RestoreArgs(lazy=True)
+      return orbax_checkpoint.RestoreArgs()
 
   restore_args = jax.tree_util.tree_map(
       _array_restore_args, structure, axis_resources)

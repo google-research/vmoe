@@ -63,14 +63,12 @@ import flax.traverse_util
 import jax
 from jax.experimental import pjit
 import jax.numpy as jnp
-import orbax.checkpoint
 from vmoe import partitioning
 from vmoe.checkpoints import serialization
 from vmoe.initialization import rules as _rules
 
 Array = jax.Array
 EmptyNode = flax.traverse_util._EmptyNode  # pylint: disable=protected-access
-LazyValue = orbax.checkpoint.lazy_utils.LazyValue
 Rules = _rules.Rules
 Transformation = _rules.Transformation
 UnparsedRules = _rules.UnparsedRules
@@ -149,8 +147,6 @@ def _flat_state_dict_mapping_build(
           f'type={type(target_value)!r}.')
     if isinstance(src_value, EmptyNode):
       continue
-    if isinstance(src_value, LazyValue):
-      src_value = src_value.get()
     if isinstance(rule, _rules.StackRule):
       if dst_key in output:
         output[dst_key] = output[dst_key].append(src_value)
