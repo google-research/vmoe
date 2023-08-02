@@ -29,6 +29,7 @@ import flax.serialization
 import flax.training.train_state
 import flax.traverse_util
 import jax
+from jax import lax
 from jax.experimental import maps
 from jax.experimental import pjit
 import jax.numpy as jnp
@@ -104,8 +105,8 @@ def accumulate_gradients_and_metrics(grad_and_metrics_fn, microsteps: int):
     pspec = jax.sharding.PartitionSpec(('expert', 'replica'))
     images = images.reshape((-1, microsteps) + images.shape[1:])
     labels = labels.reshape((-1, microsteps) + labels.shape[1:])
-    images = pjit.with_sharding_constraint(images, pspec)
-    labels = pjit.with_sharding_constraint(labels, pspec)
+    images = lax.with_sharding_constraint(images, pspec)
+    labels = lax.with_sharding_constraint(labels, pspec)
 
     def accum_fn(i, state):
       grad, rngs, metrics = state

@@ -68,8 +68,8 @@ from typing import Any, Optional, Sequence, Tuple, Union
 from absl import logging
 import flax.traverse_util
 import jax
+from jax import lax
 from jax.experimental import maps
-from jax.experimental import pjit
 import numpy as np
 
 AxisResourcesRegexes = Sequence[Tuple[str, 'UnparsedPartitionSpec']]
@@ -426,4 +426,4 @@ def with_sharding_constraint(x: PyTree, partition_spec: PartitionSpec):
   if maps.thread_resources.env.physical_mesh.empty or partition_spec is None:
     return x
   else:
-    return pjit.with_sharding_constraint(x, partition_spec)
+    return lax.with_sharding_constraint(x, partition_spec)
