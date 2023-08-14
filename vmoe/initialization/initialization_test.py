@@ -109,8 +109,7 @@ class InitializeFromOrbaxTest(_BaseInitializeTest):
                    'dtype': self.ckpt['foo'][name].dtype.str}, fp)
     # Mock the AsyncCheckpointer class.
     self.mock_async_checkpointer = self.enter_context(
-        mock.patch.object(initialization.orbax_checkpoint,
-                          'AsyncCheckpointer'))
+        mock.patch.object(initialization, 'AsyncCheckpointerWithStructure'))
     # Mock the structure() method.
     self.mock_structure = self.mock_async_checkpointer.return_value.structure
     self.mock_structure.return_value = {

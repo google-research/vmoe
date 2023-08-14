@@ -18,6 +18,7 @@ import multiprocessing.pool
 import os
 from typing import Any, Optional, Union
 
+from etils import epath
 import flax.serialization
 import flax.traverse_util
 import jax
@@ -44,6 +45,24 @@ __all__ = [
     'initialize_from_vit',
     'initialize_from_vmoe',
 ]
+
+
+class AsyncCheckpointerWithStructure(orbax_checkpoint.AsyncCheckpointer):
+
+  def structure(self, directory: epath.PathLike) -> Optional[Any]:
+    """See superclass documentation."""
+    directory = epath.Path(directory)
+    try:
+      return self._handler.structure(directory)  # pytype: disable=attribute-error
+    except NotImplementedError:
+      return
+
+
+class PyTreeCheckpointHandlerWithStructure(
+    orbax_checkpoint.PyTreeCheckpointHandler):
+
+  def structure(self, directory):
+    return super()._read_aggregate_file(directory)
 
 
 def initialize_from_orbax(
@@ -89,8 +108,7 @@ def initialize_from_orbax(
         return k, jax.ShapeDtypeStruct(shape, jax.numpy.dtype(dtype))
     return k, v
 
-  ckptr = orbax_checkpoint.AsyncCheckpointer(
-      orbax_checkpoint.PyTreeCheckpointHandler())
+  ckptr = AsyncCheckpointerWithStructure(PyTreeCheckpointHandlerWithStructure())
 
   # Restore the structure of the checkpoint.
   structure = ckptr.structure(directory)
