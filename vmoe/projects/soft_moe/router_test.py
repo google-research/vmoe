@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+"""Tests for the Soft MoE implementation."""
 from absl.testing import absltest
 import chex
 import flax.core

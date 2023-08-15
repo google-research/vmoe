@@ -12,7 +12,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Soft router merging tokens as inputs/outputs of the experts."""
+"""Soft MoE implemented as a router merging tokens as inputs/outputs of the experts.
+
+Results using this algorithm presented in the paper:
+ - "From Sparse to Soft Mixture of Experts" (https://arxiv.org/abs/2308.00951).
+"""
 from typing import Dict, Optional, Tuple
 
 from absl import logging

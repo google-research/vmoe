@@ -129,6 +129,7 @@ class MapHead(nn.Module):
   """Multihead Attention Pooling."""
   mlp_dim: int
   num_heads: int
+  qk_norm: bool = False
 
   @nn.compact
   def __call__(self, x):
@@ -140,6 +141,7 @@ class MapHead(nn.Module):
         num_heads=self.num_heads,
         kernel_init=nn.initializers.xavier_uniform(),
         deterministic=True,
+        normalize_qk=self.qk_norm,
         name='MultiHeadDotProductAttention')(inputs_q=probe, inputs_kv=x)
     y = nn.LayerNorm(name='LayerNorm')(x)
     y = MlpBlock(
@@ -154,6 +156,7 @@ class EncoderBlock(nn.Module):
   dtype: Optional[DType] = None
   dropout_rate: float = 0.0
   attention_dropout_rate: float = 0.0
+  attention_qk_norm: bool = False
   deterministic: bool = False
 
   @nn.compact
@@ -166,6 +169,7 @@ class EncoderBlock(nn.Module):
         broadcast_dropout=False,
         deterministic=self.deterministic,
         dropout_rate=self.attention_dropout_rate,
+        normalize_qk=self.attention_qk_norm,
         num_heads=self.num_heads,
         name='SelfAttention')(inputs_q=x, inputs_kv=x)
     x = nn.Dropout(rate=self.dropout_rate, deterministic=self.deterministic)(x)
@@ -214,6 +218,7 @@ class EncoderMoe(nn.Module):
   num_heads: int
   dropout_rate: float = 0.0
   attention_dropout_rate: float = 0.0
+  attention_qk_norm: bool = False
   moe: Optional[KwArgs] = None
   deterministic: bool = False
   dtype: Optional[DType] = None
@@ -241,6 +246,7 @@ class EncoderMoe(nn.Module):
         num_heads=self.num_heads,
         dropout_rate=self.dropout_rate,
         attention_dropout_rate=self.attention_dropout_rate,
+        attention_qk_norm=self.attention_qk_norm,
         deterministic=self.deterministic,
         dtype=self.dtype)
 
@@ -347,6 +353,7 @@ class VisionTransformerMoe(nn.Module):
     elif self.classifier == 'map':
       x = MapHead(
           num_heads=self.encoder['num_heads'], mlp_dim=self.encoder['mlp_dim'],
+          qk_norm=self.encoder.get('attention_qk_norm', False),
           name='MapHead')(x)
     else:
       raise ValueError(f'Unknown classifier: {self.classifier!r}')
