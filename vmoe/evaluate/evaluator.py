@@ -138,7 +138,7 @@ class EvaluateMultipleDatasets(periodic_actions.PeriodicCallback):
     # Note: We create the eval_step_pjit here to avoid multiple compilation
     # steps. If the shapes of inputs/outputs for all datasets is the same, this
     # will be only compiled once.
-    eval_state_dtype_struct = EvalState(
+    eval_state_dtype_struct = EvalState(  # pytype: disable=wrong-arg-types  # dataclass_transform
         num=jax.ShapeDtypeStruct(shape=(), dtype=jnp.float32),
         sum_correct=jax.ShapeDtypeStruct(shape=(), dtype=jnp.float32),
         sum_loss=jax.ShapeDtypeStruct(shape=(), dtype=jnp.float32),

@@ -20,7 +20,7 @@ import jax
 import jax.numpy as jnp
 
 
-class AttackState(flax.struct.PyTreeNode):
+class AttackState(flax.struct.PyTreeNode):  # pytype: disable=invalid-function-definition  # dataclass_transform
   """State used to aggregate attack statistics over several batches of images.
 
   Attributes:
