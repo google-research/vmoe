@@ -42,7 +42,7 @@ def get_base_config() -> ml_collections.ConfigDict:
   config.save_checkpoint = ml_collections.ConfigDict()
   config.save_checkpoint.every_steps = 1_000
   config.save_checkpoint.keep_last = 1
-  config.save_checkpoint.wait_seconds = 10
+  config.save_checkpoint.wait_seconds = 300
   # Report training progress every minute to avoid hitting maximum RPC/s quota.
   config.report_progress = ml_collections.ConfigDict()
   config.report_progress.every_secs = 60.0

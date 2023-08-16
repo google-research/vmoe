@@ -19,6 +19,7 @@ Xiaohua Zhai and other collaborators from Google Brain Zurich.
 """
 from typing import Any, Callable, Dict, Optional, Union
 
+from absl import logging
 from clu.data import dataset_iterator
 import jax
 import ml_collections
@@ -85,6 +86,11 @@ def get_dataset(
   Returns:
     A DatasetIterator.
   """
+  if variant == 'train' and shuffle_seed is not None:
+    logging.error('Deterministic training is not supported but you specified '
+                  'shuffle_seed=%d for training. This can potentially lead to '
+                  'data being repeated if restarts happen during training.',
+                  shuffle_seed)
   builder = vmoe.data.builder.get_dataset_builder(
       name=name,
       split=split,

@@ -14,7 +14,6 @@
 
 """Tests for trainer."""
 import functools
-import os
 from unittest import mock
 
 from absl.testing import absltest
@@ -29,6 +28,7 @@ import jax.numpy as jnp
 import ml_collections
 import numpy as np
 import optax
+import orbax.checkpoint
 import tensorflow as tf
 from vmoe.train import trainer
 
@@ -192,8 +192,7 @@ class InitializeTrainStateFromCheckpointTest(absltest.TestCase):
   """Tests that the appropriate initialization functions are called."""
 
   @mock.patch.object(
-      trainer.initialization, 'initialize_from_vmoe',
-      autospec=True)
+      trainer.initialization, 'initialize_from_vmoe', autospec=True)
   def test_initialize_from_vmoe(
       self, mock_initialize_from_vmoe):
     train_state = mock.create_autospec(trainer.TrainState, instance=True)
@@ -206,8 +205,7 @@ class InitializeTrainStateFromCheckpointTest(absltest.TestCase):
         rules=[])
 
   @mock.patch.object(
-      trainer.initialization, 'initialize_from_vit',
-      autospec=True)
+      trainer.initialization, 'initialize_from_vit', autospec=True)
   def test_initialize_from_vit(
       self, mock_initialize_from_vit):
     train_state = mock.create_autospec(trainer.TrainState, instance=True)
@@ -217,6 +215,17 @@ class InitializeTrainStateFromCheckpointTest(absltest.TestCase):
         filepath='/foo', rules=[])
     mock_initialize_from_vit.assert_called_once_with(
         target=train_state, mesh=mesh, filepath='/foo', rules=[])
+
+  @mock.patch.object(
+      trainer.initialization, 'initialize_from_orbax', autospec=True)
+  def test_initialize_from_orbax(self, mock_initialize_from_orbax):
+    train_state = mock.create_autospec(trainer.TrainState, instance=True)
+    mesh = mock.create_autospec(jax.sharding.Mesh, instance=True)
+    _ = trainer.initialize_train_state_from_checkpoint(
+        train_state=train_state, name='initialize_from_orbax', mesh=mesh,
+        directory='/foo', rules=[])
+    mock_initialize_from_orbax.assert_called_once_with(
+        target=train_state, mesh=mesh, directory='/foo', rules=[])
 
   def test_unknown_method_raises(self):
     train_state = mock.create_autospec(trainer.TrainState, instance=True)
@@ -326,23 +335,23 @@ class RestoreOrCreateTrainStateTest(absltest.TestCase):
 
   def test_create_from_scratch(self):
     """Tests when training starts from scratch."""
-    prefix = os.path.join(self.create_tempdir().full_path, 'ckpt_1')
-    train_state = trainer.restore_or_create_train_state(
-        prefix=prefix, initialize_fn=self.initialize_fn,
-        axis_resources_regexes=[], mesh=self.mesh,
+    ckpt_manager = mock.create_autospec(orbax.checkpoint.CheckpointManager,
+                                        instance=True)
+    ckpt_manager.latest_step.return_value = None
+    train_state, last_seen = trainer.restore_or_create_train_state(
+        ckpt_manager=ckpt_manager,
+        initialize_fn=self.initialize_fn,
+        axis_resources_regexes=[],
+        mesh=self.mesh,
         initialization_kwargs={})
     chex.assert_trees_all_close(flax.core.unfreeze(train_state.params), {
         'a': 1 * np.ones((5,), dtype=np.float32),
         'b': 2 * np.ones((10,), dtype=np.float32),
     })
     chex.assert_trees_all_equal(train_state.step, 0)
+    self.assertIsNone(last_seen)
 
-  @mock.patch.object(trainer.checkpoints,
-                     'find_latest_complete_checkpoint_for_prefix',
-                     return_value='/foo/ckpt_1')
-  @mock.patch.object(trainer.checkpoints, 'restore_checkpoint_partitioned',
-                     autospec=True)
-  def test_continue_training(self, mock_restore_checkpoint, _):
+  def test_continue_training(self):
     """Tests when training continues from an existing checkpoint."""
     # Mock the call to restore_checkpoint_partitioned.
     def restore_checkpoint_side_effect(*args, **kwargs):
@@ -356,19 +365,29 @@ class RestoreOrCreateTrainStateTest(absltest.TestCase):
         })
         return train_state
       with self.mesh:
-        return pjit.pjit(f, out_shardings=None)()
-    mock_restore_checkpoint.side_effect = restore_checkpoint_side_effect
+        state = pjit.pjit(f, out_shardings=None)()
+      return {
+          'state': state,
+          'dataset_iterator': {'last_seen_index': 16},
+      }
+    ckpt_manager = mock.create_autospec(orbax.checkpoint.CheckpointManager,
+                                        instance=True)
+    ckpt_manager.latest_step.return_value = 3
+    ckpt_manager.restore.side_effect = restore_checkpoint_side_effect
     # Call restore_or_create_train_state and check that the outputs are the
     # expected ones.
-    train_state = trainer.restore_or_create_train_state(
-        prefix='/foo/ckpt_1', initialize_fn=self.initialize_fn,
-        axis_resources_regexes=[], mesh=self.mesh,
+    train_state, last_seen = trainer.restore_or_create_train_state(
+        ckpt_manager=ckpt_manager,
+        initialize_fn=self.initialize_fn,
+        axis_resources_regexes=[],
+        mesh=self.mesh,
         initialization_kwargs={})
     chex.assert_trees_all_close(train_state.params, {
         'a': 3 * np.ones((5,), dtype=np.float32),
         'b': 4 * np.ones((10,), dtype=np.float32),
     })
     chex.assert_trees_all_equal(train_state.step, 3)
+    self.assertEqual(last_seen, 16)
 
   @mock.patch.object(trainer, 'initialize_train_state_from_checkpoint')
   def test_initialize_from_checkpoint(self,
@@ -399,15 +418,21 @@ class RestoreOrCreateTrainStateTest(absltest.TestCase):
         initialize_train_state_from_ckpt_side_effect)
     # Call restore_or_create_train_state and check that the outputs are the
     # expected ones.
-    train_state = trainer.restore_or_create_train_state(
-        prefix='/foo/ckpt_1', initialize_fn=self.initialize_fn,
-        axis_resources_regexes=[], mesh=self.mesh,
+    ckpt_manager = mock.create_autospec(orbax.checkpoint.CheckpointManager,
+                                        instance=True)
+    ckpt_manager.latest_step.return_value = None
+    train_state, last_seen = trainer.restore_or_create_train_state(
+        ckpt_manager=ckpt_manager,
+        initialize_fn=self.initialize_fn,
+        axis_resources_regexes=[],
+        mesh=self.mesh,
         initialization_kwargs={'foo': 'bar'})
     chex.assert_trees_all_close(flax.core.unfreeze(train_state.params), {
         'a': 1 * np.ones((5,), dtype=np.float32),
         'b': 5 * np.ones((10,), dtype=np.float32),
     })
     chex.assert_trees_all_equal(train_state.step, 0)
+    self.assertIsNone(last_seen)
 
 
 class TrainAndEvaluateTest(parameterized.TestCase):

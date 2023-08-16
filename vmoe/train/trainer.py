@@ -36,12 +36,12 @@ import jax.numpy as jnp
 import ml_collections
 import numpy as np
 import optax
-from vmoe import checkpoints
+import orbax.checkpoint
+import tensorflow as tf
 from vmoe import initialization
 from vmoe import multihost_utils
 from vmoe import partitioning
 from vmoe import utils
-from vmoe.checkpoints import periodic_actions as checkpoints_periodic_actions
 from vmoe.data import input_pipeline
 from vmoe.data import pjit_utils
 from vmoe.evaluate import ensemble
@@ -62,7 +62,6 @@ DatasetIterator = input_pipeline.DatasetIterator
 Mesh = partitioning.Mesh
 NamedSharding = jax.sharding.NamedSharding
 PartitionSpec = partitioning.PartitionSpec
-PeriodicCheckpointSaver = checkpoints_periodic_actions.PeriodicSaveCheckpoint
 PRNGKey = Union[jax.numpy.ndarray, jax.random.KeyArray]
 PyTree = Any
 ReportProgress = train_periodic_actions.ReportProgress
@@ -132,18 +131,38 @@ def accumulate_gradients_and_metrics(grad_and_metrics_fn, microsteps: int):
   return new_grad_and_metrics_fn
 
 
-def create_checkpoint_hook(*, workdir: str, progress_hook: ReportProgress,
-                           train_steps: int,
-                           **kwargs) -> PeriodicCheckpointSaver:
-  on_steps = set(kwargs.pop('on_steps', []))
-  # Always save checkpoint on the last step.
-  on_steps.update((0, train_steps))
-  return PeriodicCheckpointSaver(
-      prefix=os.path.join(workdir, 'ckpt'),
-      report_progress=progress_hook,
-      report_progress_name='ckpt',
-      on_steps=on_steps,
-      **kwargs)
+def create_checkpoint_manager(
+    *,
+    workdir: str,
+    every_steps: int,
+    keep_last: Optional[int] = None,
+    keep_steps_multiple_of: Optional[int] = None,
+    wait_seconds: int = 300,
+) -> orbax.checkpoint.CheckpointManager:
+  """Creates an Orbax checkpoint manager."""
+  directory = os.path.join(workdir, 'ckpt')
+  if jax.process_index() == 0 and not tf.io.gfile.exists(directory):
+    tf.io.gfile.makedirs(directory)
+  multihost_utils.sync_devices('create-ckpt-dir')
+  ckpt_options = orbax.checkpoint.CheckpointManagerOptions(
+      save_interval_steps=every_steps,
+      max_to_keep=keep_last,
+      keep_period=keep_steps_multiple_of,
+  )
+  ckpt_manager = orbax.checkpoint.CheckpointManager(
+      directory,
+      {
+          'state': orbax.checkpoint.AsyncCheckpointer(
+              orbax.checkpoint.PyTreeCheckpointHandler(),
+              timeout_secs=wait_seconds,
+          ),
+          'dataset_iterator': orbax.checkpoint.Checkpointer(
+              orbax.checkpoint.JsonCheckpointHandler()
+          ),
+      },
+      options=ckpt_options,
+  )
+  return ckpt_manager
 
 
 def create_evaluation_hook(
@@ -301,10 +320,11 @@ def create_or_reuse_train_state(
 
 
 def get_dataset_iterator(
-    dataset: DatasetIterator, prefetch_size: int, init_step: int, mesh: Mesh,
-    workdir: str):
+    dataset: DatasetIterator, prefetch_size: int, mesh: Mesh,
+    last_seen_index: Optional[int] = None):
   """Creates a dataset iterator with device prefetching."""
-  del init_step, workdir
+  logging.warning("Your dataset iterator doesn't allow checkpointing!")
+  del last_seen_index
   return pjit_utils.prefetch_to_device(dataset, size=prefetch_size, mesh=mesh)
 
 
@@ -350,19 +370,17 @@ def make_create_train_state_fn(
 
 def restore_or_create_train_state(
     *,
-    prefix: str,
+    ckpt_manager: orbax.checkpoint.CheckpointManager,
     initialize_fn: Callable[[], TrainState],
     axis_resources_regexes: partitioning.AxisResourcesRegexes,
     mesh: Optional[Mesh] = None,
     thread_pool: Optional[ThreadPool] = None,
     initialization_kwargs: Optional[Mapping[str, Any]] = None,
-) -> TrainState:
+) -> Tuple[TrainState, Optional[int]]:
   """Restores a TrainState from the latest complete checkpoint or creates one.
 
   Args:
-    prefix: Prefix used to find the checkpoint (e.g. '/tmp/ckpt'). This assumes
-      that checkpoints are partitioned. Thus, a complete checkpoint has files
-      such as '/tmp/ckpt_1.index' and '/tmp/ckpt_1.data-?????-of-?????'.
+    ckpt_manager: Checkpoint manager.
     initialize_fn: Function used to create and initialize a train state from
       scratch.
     axis_resources_regexes: Regular expressions specifying how the TrainState
@@ -373,7 +391,7 @@ def restore_or_create_train_state(
       initialize the TrainState from an existing checkpoint.
 
   Returns:
-    A TrainState.
+    A TrainState and (optionally) the last_seen_index.
   """
   mesh = mesh or maps.thread_resources.env.physical_mesh
   train_state_shape_dtype = jax.eval_shape(initialize_fn)
@@ -388,15 +406,25 @@ def restore_or_create_train_state(
       lambda x, y: jax.ShapeDtypeStruct(x.shape, x.dtype, sharding=y),
       train_state_shape_dtype, train_state_axis_resources)
 
-  prefix = checkpoints.find_latest_complete_checkpoint_for_prefix(
-      prefix=prefix, suffixes=('.index', '.data'))
-  if prefix:
-    logging.info('Continue training from checkpoint prefix = %r', prefix)
-    # Restore train_state from checkpoints to CPU memory.
-    return checkpoints.restore_checkpoint_partitioned(
-        prefix=prefix,
-        tree=train_state,
-        thread_pool=thread_pool)
+  if (step := ckpt_manager.latest_step()) is not None:
+    logging.info('Continue training from checkpoint at step %d', step)
+    def _array_restore_args_fn(x: jax.ShapeDtypeStruct):
+      return orbax.checkpoint.ArrayRestoreArgs(
+          dtype=x.dtype, sharding=x.sharding, global_shape=x.shape)
+    restore_kwargs = {
+        'state': {
+            'restore_args': jax.tree_map(_array_restore_args_fn, train_state),
+        },
+    }
+    items = ckpt_manager.restore(
+        step,
+        items={
+            'state': train_state,
+            'dataset_iterator': {'last_seen_index': 0},
+        },
+        restore_kwargs=restore_kwargs)
+    return items['state'], items['dataset_iterator']['last_seen_index']
+
   if initialization_kwargs:
     logging.info('Partially initializing the TrainState: %r',
                  initialization_kwargs)
@@ -409,7 +437,7 @@ def restore_or_create_train_state(
       train_state_shape_dtype.params, include_stats=False,
       msg='Parameter overview:')
   return create_or_reuse_train_state(
-      train_state=train_state, initialize_fn=initialize_fn, mesh=mesh)
+      train_state=train_state, initialize_fn=initialize_fn, mesh=mesh), None
 
 
 def get_loss_fn(name: str, **kwargs):
@@ -503,6 +531,9 @@ def initialize_train_state_from_checkpoint(
   elif name == 'initialize_from_vit':
     return initialization.initialize_from_vit(target=train_state, mesh=mesh,
                                               **kwargs)
+  elif name == 'initialize_from_orbax':
+    return initialization.initialize_from_orbax(target=train_state, mesh=mesh,
+                                                **kwargs)
   else:
     raise ValueError(f'Unknown initialization method: {name!r}')
 
@@ -661,6 +692,8 @@ def train_and_evaluate(config: ml_collections.ConfigDict, workdir: str,
   datataset_element_shape_dtype = pjit_utils.get_dataset_shape_dtype_struct(
       datasets['train'])
 
+  ckpt_manager = create_checkpoint_manager(
+      workdir=workdir, **config.get('save_checkpoint', {}))
   train_state_initialize_fn = make_create_train_state_fn(
       model=create_flax_model(config=config.model, deterministic=False),
       optimizer_config=config.optimizer,
@@ -669,8 +702,8 @@ def train_and_evaluate(config: ml_collections.ConfigDict, workdir: str,
       train_steps=train_steps,
       extra_rng_keys=tuple(config.get('extra_rng_keys', [])),
       seed=config.get('seed', 0))
-  train_state = restore_or_create_train_state(
-      prefix=os.path.join(workdir, 'ckpt'),
+  train_state, last_seen_index = restore_or_create_train_state(
+      ckpt_manager=ckpt_manager,
       initialize_fn=train_state_initialize_fn,
       axis_resources_regexes=config.params_axis_resources,
       thread_pool=ThreadPool(),
@@ -680,7 +713,8 @@ def train_and_evaluate(config: ml_collections.ConfigDict, workdir: str,
   tr_iter = get_dataset_iterator(
       dataset=datasets['train'],
       prefetch_size=config.dataset.train.get('prefetch_device', 1),
-      init_step=init_step, mesh=mesh, workdir=workdir)
+      mesh=mesh,
+      last_seen_index=last_seen_index)
   train_loss_fn, eval_loss_fn, label_pred_fn = get_loss_fn(**config.loss)
   summarizer = create_tree_summarizer(config.get('summarize_arrays'))
   train_step_fn = functools.partial(
@@ -715,9 +749,6 @@ def train_and_evaluate(config: ml_collections.ConfigDict, workdir: str,
   progress_hook = create_progress_hook(
       writer=writer, first_step=init_step + 1, train_steps=train_steps,
       **config.get('report_progress', {}))
-  checkpoint_hook = create_checkpoint_hook(
-      workdir=workdir, progress_hook=progress_hook,
-      train_steps=train_steps, **config.get('save_checkpoint', {}))
   evaluation_hook, config_model_eval = create_evaluation_hook(
       base_model_config=config.model.copy_and_resolve_references(),
       writer=writer,
@@ -739,8 +770,19 @@ def train_and_evaluate(config: ml_collections.ConfigDict, workdir: str,
       **config.get('fewshot', {}))
   # Run checkpoint hook just before starting the loop. This will save the train
   # state at initialization.
-  if init_step == 0:
-    checkpoint_hook(init_step, state=train_state, iterator=tr_iter)
+  def _save_checkpoint(step, ts, it, force=False):
+    last_seen_index = step * train_batch_size
+    with progress_hook.timed('ckpt', wait_jax_async_dispatch=False):
+      ckpt_manager.save(
+          step,
+          items={
+              'state': ts,
+              'dataset_iterator': {'last_seen_index': last_seen_index},
+          },
+          force=force)
+  if init_step == 0 and not tf.io.gfile.exists(os.path.join(workdir, 'ckpt/0')):
+    multihost_utils.sync_devices('training:ckpt-first')
+    _save_checkpoint(init_step, train_state, tr_iter, force=True)
   # Explicitly compile train_step here and report the compilation time.
   t0 = time.time()
   train_step_pjit = train_step_pjit.lower(
@@ -756,9 +798,14 @@ def train_and_evaluate(config: ml_collections.ConfigDict, workdir: str,
                                              batch['labels'])
     progress_hook(
         step, scalar_metrics={f'train/{k}': v for k, v in metrics.items()})
-    checkpoint_hook(step, state=train_state, iterator=tr_iter)
+    _save_checkpoint(step, train_state, tr_iter)
     evaluation_hook(step, params=train_state.params)
     fewshot_hook(step, variables={'params': train_state.params})
+  ckpt_manager.wait_until_finished()
+  if not tf.io.gfile.exists(os.path.join(workdir, f'ckpt/{train_steps}')):
+    multihost_utils.sync_devices('training:ckpt-last')
+    _save_checkpoint(train_steps, train_state, tr_iter, force=True)
+    ckpt_manager.wait_until_finished()
   multihost_utils.sync_devices('training:completed')
   logging.info('Training completed.')
 

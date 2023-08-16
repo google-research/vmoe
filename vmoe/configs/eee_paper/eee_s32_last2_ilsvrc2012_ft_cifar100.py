@@ -165,7 +165,7 @@ def get_config():
   config.save_checkpoint.every_steps = 1_000
   config.save_checkpoint.keep_last = 1
   config.save_checkpoint.num_shards = 32  # Target number of checkpoint shards.
-  config.save_checkpoint.wait_seconds = 1.0
+  config.save_checkpoint.wait_seconds = 300
   # Report training progress every 100 steps.
   config.report_progress = ml_collections.ConfigDict()
   config.report_progress.every_secs = None
