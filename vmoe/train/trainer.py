@@ -642,7 +642,7 @@ def train_step(
 
   @functools.partial(jax.grad, has_aux=True)
   def compute_grads_and_metrics(params, images, labels, rngs):
-    rngs, next_rngs = utils.tree_rngs_split(state.rngs)
+    rngs, next_rngs = utils.tree_rngs_split(rngs)
     logits, metrics = state.apply_fn({'params': params}, images, rngs=rngs)
     metrics = dict(**metrics)
     metrics['main_loss'] = jnp.mean(loss_fn(logits, labels))
