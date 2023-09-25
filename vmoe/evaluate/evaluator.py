@@ -160,7 +160,7 @@ class EvaluateMultipleDatasets(periodic_actions.PeriodicCallback):
         in_shardings=(), out_shardings=None, static_argnums=(0,))
     def make_eval_state_pjit(seed):
       rngs = utils.make_rngs(rng_keys, seed)
-      return EvalState(
+      return EvalState(  # pytype: disable=wrong-arg-types  # jnp-type
           num=jnp.zeros((), dtype=jnp.float32),
           sum_correct=jnp.zeros((), dtype=jnp.float32),
           sum_loss=jnp.zeros((), dtype=jnp.float32),
