@@ -13,13 +13,13 @@
 # limitations under the License.
 
 """TrainState and other related classes."""
-from typing import Any, Callable, Dict, Mapping, Tuple, Union
+from typing import Any, Callable, Dict, Mapping, Tuple
 
 import flax.training.train_state
 import jax
 import optax
 
-PRNGKey = Union[jax.numpy.ndarray, jax.random.KeyArray]
+PRNGKey = jax.Array
 
 
 class TrainState(flax.training.train_state.TrainState):

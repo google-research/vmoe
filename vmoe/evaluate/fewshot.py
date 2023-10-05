@@ -39,7 +39,7 @@ Array = Union[jax.numpy.ndarray, np.ndarray]
 DatasetIterator = vmoe.data.input_pipeline.DatasetIterator
 PartitionSpec = jax.sharding.PartitionSpec
 PyTree = Any
-PRNGKey = jax.random.KeyArray
+PRNGKey = jax.Array
 
 BIAS_CONSTANT = 100.0
 VALID_KEY = vmoe.data.input_pipeline.VALID_KEY
@@ -333,7 +333,7 @@ def _make_fewshot_step_pjit(
     rng_keys: Sequence[str],
 ):
   """Wraps _fewshot_step with pjit."""
-  state_axis_resources = FewShotState(
+  state_axis_resources = FewShotState(  # pytype: disable=wrong-arg-types
       rngs={key: PartitionSpec() for key in rng_keys})
   fewshot_step_pjit = jax.experimental.pjit.pjit(
       functools.partial(_fewshot_step, apply_fn=apply_fn),

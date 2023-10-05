@@ -21,7 +21,7 @@ from typing import Any, Callable, Dict, Iterator, Optional, Sequence, Tuple, Typ
 import jax
 import jax.numpy as jnp
 
-PRNGKey = jax.random.KeyArray
+PRNGKey = jax.Array
 
 
 def make_rngs(rng_keys: Tuple[str, ...], seed: int) -> Dict[str, PRNGKey]:
