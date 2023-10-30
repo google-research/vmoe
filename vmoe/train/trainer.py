@@ -153,7 +153,9 @@ def create_checkpoint_manager(
       directory,
       {
           'state': orbax.checkpoint.AsyncCheckpointer(
-              orbax.checkpoint.PyTreeCheckpointHandler(),
+              orbax.checkpoint.PyTreeCheckpointHandler(
+                  write_tree_metadata=True,
+              ),
               timeout_secs=wait_seconds,
           ),
           'dataset_iterator': orbax.checkpoint.Checkpointer(
