@@ -86,7 +86,7 @@ class EncoderMoeTest(parameterized.TestCase):
             'encoder_norm': {'bias': jnp.zeros(8), 'scale': jnp.ones(8)},
         },
     }, x)
-    expected_y = jax.nn.normalize(
+    expected_y = jax.nn.standardize(
         jnp.concatenate([pos_embedding, pos_embedding]), axis=-1)
     chex.assert_trees_all_close(y, expected_y)
 
@@ -124,7 +124,7 @@ class EncoderMoeTest(parameterized.TestCase):
         'params': {'encoder_norm': {'bias': jnp.zeros(8), 'scale': jnp.ones(8)}}
     }, x)
     pos_embedding = jnp.asarray(pos_embedding)
-    expected_y = jax.nn.normalize(
+    expected_y = jax.nn.standardize(
         jnp.concatenate([pos_embedding, pos_embedding]), axis=-1)
     chex.assert_trees_all_close(y, expected_y, rtol=1e-3)
 
