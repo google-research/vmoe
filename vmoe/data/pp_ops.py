@@ -25,6 +25,11 @@ import tensorflow.compat.v1 as tf
 import tensorflow.compat.v2 as tf2
 
 try:
+  from big_vision.pp import ops_text as bv_ops_text  # pylint: disable=g-import-not-at-top
+except ImportError:
+  bv_ops_text = None
+
+try:
   from cloud_tpu.models.efficientnet import autoaugment  # pylint: disable=g-import-not-at-top
 except ImportError:
   autoaugment = None
@@ -258,7 +263,7 @@ def randaug(num_layers: int = 2, magnitude: int = 10):
     a function that applies RandAugment.
   """
   if autoaugment is None:
-    raise ValueError(
+    raise NotImplementedError(
         "In order to use RandAugment you need to install the 'cloud_tpu' "
         "package. Clone the https://github.com/tensorflow/tpu repository, "
         "name it 'cloud_tpu', and add the corresponding directory to your "
@@ -348,6 +353,50 @@ def reshape(new_shape):
     return tf.cast(image, dtype)
 
   return _reshape
+
+
+@InKeyOutKey(indefault='text', outdefault='text')
+def tokenize(
+    max_len,
+    eos,
+    model='c4_en',
+    lower=True,
+    sample_if_multi=True,
+    pad_value='<pad>',
+):
+  """Tokenizes text using big_vision.pp.ops_text.tokenize."""
+  if bv_ops_text is None:
+    raise NotImplementedError(
+        "In order to tokenize text you must install the Big Vision package. "
+        "Clone the https://github.com/google-research/big_vision repository, "
+        "and add the 'big_vision' directory to your PYTHONPATH.")
+
+  if eos not in ('yes', 'none', 'sticky'):
+    raise ValueError(f"Invalid value for eos: '{eos}'.")
+
+  tokenizer = bv_ops_text.create_tokenizer(model, add_eos=eos != 'none')
+
+  if isinstance(pad_value, str):
+    pad_value = tokenizer.string_to_id(pad_value)
+
+  def _pp_tokenize(txt):
+    if sample_if_multi:
+      txt = bv_ops_text.ops_general.get_choice(
+          empty_fallback='', key='t')({'t': txt})['t']
+
+    if lower:
+      txt = tf.strings.lower(txt) if sample_if_multi else tf.map_fn(
+          tf.strings.lower, txt)
+
+    return bv_ops_text.tokenize(
+        txt,
+        tokenizer,
+        max_len,
+        pad_value=pad_value,
+        force_eos=eos == 'sticky',
+        multi_text=not sample_if_multi)
+
+  return _pp_tokenize
 
 
 @InKeyOutKey()

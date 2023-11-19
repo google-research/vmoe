@@ -61,6 +61,7 @@ def get_dataset(
     process: str,
     cache: Optional[str] = None,
     num_parallel_calls: int = 128,
+    pre_filter_fn: Optional[Callable[[Data], bool]] = None,
     prefetch: Optional[Union[int, str]] = None,
     shuffle_buffer: int = DEFAULT_SHUFFLE_BUFFER,
     shuffle_seed: Optional[int] = None,
@@ -78,6 +79,7 @@ def get_dataset(
     cache: If 'loaded' caches the dataset after loading it. If 'batched',
       caches it after batching. If `None`, no caching is done.
     num_parallel_calls: Process this number of examples in parallel.
+    pre_filter_fn: If given, filters the dataset according to this function.
     prefetch: If given, prefetches this number of batches.
     shuffle_buffer: Size of the shuffle buffer. Only used for training.
     shuffle_seed: Optional seed for shuffling files and examples.
@@ -104,6 +106,7 @@ def get_dataset(
                      f'and {jax.device_count()} respectively.')
   batch_size_per_process = batch_size // jax.process_count()
   data = builder.as_dataset()
+  data = data.filter(pre_filter_fn) if pre_filter_fn is not None else data
   # Optionally, cache loaded data.
   if cache == 'loaded':
     data = data.cache()
@@ -154,7 +157,7 @@ def get_data_num_examples(config: ml_collections.ConfigDict) -> int:
   # These are kwarg keys used when creating the pipeline, not the builder.
   pipeline_keys = ('variant', 'batch_size', 'process', 'cache',
                    'num_parallel_calls', 'prefetch', 'prefetch_device',
-                   'shuffle_buffer')
+                   'shuffle_buffer', 'pre_filter_fn')
   builder_kwargs = {k: v for k, v in config.items() if k not in pipeline_keys}
   builder = vmoe.data.builder.get_dataset_builder(**builder_kwargs)
   return builder.num_examples

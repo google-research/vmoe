@@ -21,6 +21,7 @@ import tensorflow.compat.v1 as tf
 from vmoe.data import pp_ops
 
 
+
 class PreprocessOpsTest(tf.test.TestCase):
 
   def get_data(self, dtype=tf.uint8):
@@ -125,6 +126,24 @@ class PreprocessOpsTest(tf.test.TestCase):
     data = {'image': tf.constant(np.zeros((8, 32 * 32 * 3)))}
     output_data = pp_ops.reshape(new_shape=(8, 32, 32, 3))(data)
     self.assertAllEqual(output_data['image'].shape, [8, 32, 32, 3])
+
+  def test_tokenize(self):
+    if pp_ops.bv_ops_text is None:
+      self.skipTest('Big Vision is not installed.')
+    model = 'c4_en'  # pylint: disable=unused-variable
+    max_len = 5
+    data = {'text': tf.constant(['FOO', 'BAR'], dtype=tf.string)}
+    output_data = pp_ops.tokenize(
+        max_len=max_len, eos='yes', model=model, sample_if_multi=True)(data)
+    self.assertEqual(output_data['text'].shape, [max_len])
+
+  def test_tokenize_raises(self):
+    original_bv_ops_text = pp_ops.bv_ops_text
+    pp_ops.bv_ops_text = None
+    with self.assertRaisesRegex(NotImplementedError, 'you must install'):
+      data = {'text': tf.constant(['FOO', 'BAR'], dtype=tf.string)}
+      pp_ops.tokenize(max_len=5, eos='yes')(data)
+    pp_ops.bv_ops_text = original_bv_ops_text
 
 if __name__ == '__main__':
   tf.test.main()
