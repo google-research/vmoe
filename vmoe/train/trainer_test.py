@@ -241,11 +241,14 @@ class MakeCreateTrainStateFnTest(absltest.TestCase):
   def test(self, mock_create_optimizer):
     mock_create_optimizer.return_value = trainer.optimizer.optax.adam(
         learning_rate=0.1)
+    mesh = jax.sharding.Mesh(np.asarray(jax.devices()), ('d',))
+    sharding = jax.sharding.NamedSharding(mesh, PartitionSpec(('d',)))
+    shape_dtype = jax.ShapeDtypeStruct(
+        shape=(8, 32, 32, 3), dtype=jnp.float32, sharding=sharding)
     train_state_init_fn = trainer.make_create_train_state_fn(
         model=trainer.nn.Conv(features=16, kernel_size=(3, 3)),
         optimizer_config={},
-        input_shape=(8, 32, 32, 3),
-        input_axis_resources=PartitionSpec(('d',)),
+        input_shape_dtypes=(shape_dtype,),
         train_steps=10,
         seed=0,
         extra_rng_keys=('foo',))
