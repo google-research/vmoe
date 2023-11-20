@@ -86,10 +86,23 @@ def get_config():
   config.description = 'EEE-S/32, K=1, M=2, Last 2'
   config.train_steps = 2_000
   config.initialization = ml_collections.ConfigDict({
-      'name': 'initialize_from_vmoe_release',
+      'name': 'initialize_from_vmoe',
       'prefix': 'gs://vmoe_checkpoints/eee_s32_last2_ilsvrc2012',
-      'keep': ['head'],
-      'reshape': ['Moe/Router/dense'],
+      'rules': [
+          ('head', ''),              # Do not restore the head params.
+          # We pre-trained on 224px and are finetuning on 128px.
+          # Resize positional embeddings.
+          ('^(.*/pos_embedding)$', r'params/\1', 'vit_zoom'),
+          # Reshape router params to the appropriate shape for EEE.
+          ('^(.*/Moe/Router/dense/.*)$', r'params/\1', 'reshape'),
+          # Restore the rest of parameters without any transformation.
+          ('^(.*)$', r'params/\1'),
+      ],
+      # We are not initializing several arrays from the new train state, do not
+      # raise an exception.
+      'raise_if_target_unmatched': False,
+      # Partition MoE parameters when reading from the checkpoint.
+      'axis_resources_regexes': [('Moe/Mlp/.*', ('expert',))],
   })
   config.model = ml_collections.ConfigDict({
       'name': 'VisionTransformerMoeEnsemble',
@@ -164,7 +177,6 @@ def get_config():
   config.save_checkpoint = ml_collections.ConfigDict()
   config.save_checkpoint.every_steps = 1_000
   config.save_checkpoint.keep_last = 1
-  config.save_checkpoint.num_shards = 32  # Target number of checkpoint shards.
   config.save_checkpoint.wait_seconds = 300
   # Report training progress every 100 steps.
   config.report_progress = ml_collections.ConfigDict()
