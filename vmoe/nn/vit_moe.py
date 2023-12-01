@@ -269,6 +269,8 @@ class EncoderMoe(nn.Module):
     # By default, for back-compatibility, we use learned positional embeddings.
     position_emb = self.position_emb or {}
     name = position_emb.get('name', 'learned')
+    if name == 'none':
+      return inputs
     if name == 'learned':
       return AddPositionEmbs(
           posemb_init=nn.initializers.normal(stddev=0.02),  # from BERT.
@@ -320,7 +322,15 @@ class VisionTransformerMoe(nn.Module):
   representation_size: Optional[int] = None
   deterministic: bool = False
   head_bias_init: float = 0.0
+  head_kernel_zero_init: bool = True
   encoder_cls: Type[nn.Module] = EncoderMoe
+
+  @property
+  def kernel_init(self) -> nn.initializers.Initializer:
+    if self.head_kernel_zero_init:
+      return nn.initializers.zeros
+    else:
+      return nn.linear.default_kernel_init
 
   @nn.compact
   def __call__(self, inputs):
@@ -367,7 +377,7 @@ class VisionTransformerMoe(nn.Module):
       logits = nn.Dense(
           features=self.num_classes,
           name='head',
-          kernel_init=nn.initializers.zeros,
+          kernel_init=self.kernel_init,
           bias_init=nn.initializers.constant(self.head_bias_init))(x)
       return logits, metrics
     else:
