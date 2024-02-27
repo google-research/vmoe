@@ -20,9 +20,6 @@ import jax.numpy as jnp
 import numpy as np
 from vmoe.initialization import rules as _rules
 
-jax.config.update('experimental_xmap_spmd_lowering', True)
-jax.config.update('experimental_xmap_spmd_lowering_manual', True)
-
 
 class ZoomTest(parameterized.TestCase):
 

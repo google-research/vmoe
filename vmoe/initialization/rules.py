@@ -21,13 +21,18 @@ from typing import Any, List, Optional, Sequence, Tuple, Union
 
 import flax.struct
 import jax
+from jax.experimental import shard_map
+from jax.interpreters import pxla
 import jax.numpy as jnp
+from jax.sharding import PartitionSpec as P
 import scipy.ndimage
 from vmoe import partitioning
 from vmoe import utils
 
 Array = jax.Array
 UnparsedRules = Sequence[Union['Rule', Tuple[Any, ...]]]
+
+shard_map = shard_map.shard_map
 
 get_array_sharding_or_default = partitioning.get_array_sharding_or_default
 
@@ -290,12 +295,26 @@ class ZoomTransformation(Transformation):
   @classmethod
   def _zoom(cls, source, callback_shape_dtype, zoom):
     # Wrap scipy.ndimage.zoom with a _pure_callback call.
-    return jax.pure_callback(
-        lambda xx: scipy.ndimage.zoom(xx, zoom, order=1),
-        callback_shape_dtype,
-        source,
-        vectorized=False,
-    )
+    def _pure_callback_zoom(x):
+      return jax.pure_callback(
+          lambda xx: scipy.ndimage.zoom(xx, zoom, order=1),
+          callback_shape_dtype,
+          x,
+          vectorized=False,
+      )
+
+    mesh = pxla.thread_resources.env.physical_mesh
+    if mesh.empty:
+      return _pure_callback_zoom(source)
+    else:
+      source = partitioning.with_sharding_constraint(source, P())
+      return shard_map(
+          _pure_callback_zoom,
+          mesh,
+          in_specs=P(*(None,) * source.ndim),
+          out_specs=P(*(None,) * source.ndim),
+          check_rep=False,
+      )(source)
 
   def __call__(self) -> Array:
     source = self.source
