@@ -47,7 +47,7 @@ def compute_loss_predict_cw_fn(x, y, rngs, *, apply_fn, loss_fn):
   # This is a dict mapping from each MoE layer to a binary array of shape
   # (batch_size, num_tokens, num_experts).
   combine_weights = get_combine_weights(intermediates)
-  combine_weights = jax.tree_map(
+  combine_weights = jax.tree_util.tree_map(
       lambda m: m.reshape(batch_size, -1, m.shape[1]), combine_weights)
   return loss, pred, correct, combine_weights
 

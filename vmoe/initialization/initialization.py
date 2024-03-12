@@ -233,10 +233,11 @@ def initialize_from_vmoe(
   # each array read from the checkpoint.
   index = vmoe_checkpoint.restore_checkpoint(prefix + '.index')
   version = index.get('version', vmoe_checkpoint.Version.UNKNOWN)
-  shapes = jax.tree_map(lambda x: x.global_shape, index['index'])
+  shapes = jax.tree_util.tree_map(lambda x: x.global_shape, index['index'])
   if version == vmoe_checkpoint.Version.UNKNOWN:
-    if (jax.tree_structure(vmoe_serialization.to_state_dict(target)) !=
-        jax.tree_structure(shapes)):
+    target_state_dict = vmoe_serialization.to_state_dict(target)
+    if (jax.tree_util.tree_structure(target_state_dict) !=
+        jax.tree_util.tree_structure(shapes)):
       raise ValueError(
           'Initialization from V-MoE checkpoints created before 2022/06/22 '
           'is only possible when the structure of the checkpoint and target '

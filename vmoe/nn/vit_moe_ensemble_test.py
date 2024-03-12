@@ -43,7 +43,8 @@ class VitMoeEnsembleTest(parameterized.TestCase):
 
     rngs = dict(params=jax.random.PRNGKey(0), gating=jax.random.PRNGKey(1))
     x = jax.random.normal(jax.random.PRNGKey(0), (16, 4, 4, 3))
-    shapes = jax.tree_map(lambda x: x.shape, jax.eval_shape(init, rngs, x))
+    shapes = jax.tree_util.tree_map(
+        lambda x: x.shape, jax.eval_shape(init, rngs, x))
     shapes = flax.core.unfreeze(shapes)
     expected_shapes = {
         'params': {

@@ -61,8 +61,8 @@ def _create_model_with_routing(batch_size: int, image_size: int):
   flax_module = ModelWithRouting()
   image_size = (batch_size, image_size, image_size, 3)
   variables = flax_module.init(jax.random.PRNGKey(0), np.zeros(image_size))
-  variables_axis_resources = jax.tree_map(lambda _: lib.PartitionSpec(),
-                                          variables)
+  variables_axis_resources = jax.tree_util.tree_map(
+      lambda _: lib.PartitionSpec(), variables)
   router_keys = {'router/__call__'}
   loss_fn = lambda a, b, _: optax.softmax_cross_entropy(a, b)
   return (flax_module, variables, variables_axis_resources, loss_fn,
@@ -82,8 +82,8 @@ def _create_model_without_routing(batch_size: int, image_size: int):
   flax_module = ModelWithoutRouting()
   image_size = (batch_size, image_size, image_size, 3)
   variables = flax_module.init(jax.random.PRNGKey(0), np.zeros(image_size))
-  variables_axis_resources = jax.tree_map(lambda _: lib.PartitionSpec(),
-                                          variables)
+  variables_axis_resources = jax.tree_util.tree_map(
+      lambda _: lib.PartitionSpec(), variables)
   loss_fn = lambda a, b, _: optax.softmax_cross_entropy(a, b)
   return flax_module, variables, variables_axis_resources, loss_fn, {}, {}
 

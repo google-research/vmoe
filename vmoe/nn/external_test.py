@@ -57,16 +57,19 @@ class BaseExternalTest(abc.ABC):
 
       variables = model.init(jax.random.PRNGKey(0), x)
       params = variables['params']
+      grads = None
       for _ in range(2):
         grads = compute_grad(params)
-        params = jax.tree_map(lambda p, g: p - 0.01 * g, params, grads)
+        params = jax.tree_util.tree_map(
+            lambda p, g: p - 0.01 * g, params, grads)
 
       return grads
 
     x = jax.random.normal(jax.random.PRNGKey(0), (8, 64, 64, 3))
     grads = fn(x)
-    grads_norm = jax.tree_map(lambda x: jnp.linalg.norm(x.flatten()), grads)
-    zeros = jax.tree_map(jnp.zeros_like, grads_norm)
+    grads_norm = jax.tree_util.tree_map(
+        lambda x: jnp.linalg.norm(x.flatten()), grads)
+    zeros = jax.tree_util.tree_map(jnp.zeros_like, grads_norm)
     print(grads_norm)
     chex.assert_trees_all_equal_comparator(lambda x, y: x > y,
                                            '{} is not greater than {}'.format,

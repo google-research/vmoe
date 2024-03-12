@@ -153,7 +153,7 @@ class VitMoeTest(parameterized.TestCase):
       x = jax.random.normal(jax.random.PRNGKey(0), (16, 4, 4, 3))
       return model.init(rngs, x)
 
-    shapes = jax.tree_map(
+    shapes = jax.tree_util.tree_map(
         lambda x: x.shape, flax.core.unfreeze(jax.eval_shape(init))
     )
     expected_shapes = {
@@ -237,8 +237,8 @@ class VitMoeTest(parameterized.TestCase):
     model = vit_moe.VisionTransformerMoe(**config)
     rngs = dict(params=jax.random.PRNGKey(0), gating=jax.random.PRNGKey(1))
     x = jax.ShapeDtypeStruct((16, 4, 4, 3), jax.numpy.float32)
-    shapes = jax.tree_map(lambda x: x.shape,
-                          jax.eval_shape(model.init, rngs, x))
+    shapes = jax.tree_util.tree_map(lambda x: x.shape,
+                                    jax.eval_shape(model.init, rngs, x))
     shapes = flax.core.unfreeze(shapes)
     self.assertDictEqual(shapes['params']['Encoder']['posembed_input'],
                          {'pos_embedding': (1, seq_length, 8)})

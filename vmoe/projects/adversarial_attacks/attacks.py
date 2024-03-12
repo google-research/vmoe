@@ -120,7 +120,8 @@ def stateful_attack(attack_state, x, y, valid, *,
   num_changes = jnp.sum(y_m != y_0, dtype=jnp.int32)
   num_correct = jnp.stack([c_0.sum(), c_m.sum()], axis=0)
   sum_loss = jnp.stack([l_0.sum(), l_m.sum()], axis=0)
-  sum_iou_experts = jax.tree_map(sum_intersection_over_union, cw_0, cw_m)
+  sum_iou_experts = jax.tree_util.tree_map(
+      sum_intersection_over_union, cw_0, cw_m)
   new_attack_state = attack_state.update(
       rngs=new_rngs, num_images=num_images, num_changes=num_changes,
       num_correct=num_correct, sum_loss=sum_loss,
@@ -151,7 +152,8 @@ def stateless_attack_pgd(
   # If rngs are given, split them in num_updates + 1. The last one will be
   # returned at the end of this function, the others are used in each update.
   if rngs is not None:
-    rngs = jax.tree_map(lambda rng: jax.random.split(rng, num_updates +1), rngs)
+    rngs = jax.tree_util.tree_map(
+        lambda rng: jax.random.split(rng, num_updates +1), rngs)
   # This computes gradients of loss_fn w.r.t. the images.
   @jax.grad
   def compute_loss_grads(x, rngs):
@@ -160,13 +162,15 @@ def stateless_attack_pgd(
     return loss
   # Performs an adversarial update on the given images.
   def update(i, x_c):
-    rngs_c = jax.tree_map(lambda x: x[i], rngs) if rngs is not None else None
+    rngs_c = jax.tree_util.tree_map(
+        lambda x: x[i], rngs) if rngs is not None else None
     dx = compute_loss_grads(x_c, rngs_c)
     x_n = x_c + delta * jnp.sign(dx)
     return x_n
   # Performs num_updates on the original images.
   images = jax.lax.fori_loop(0, num_updates, update, images)
-  rngs = jax.tree_map(lambda x: x[-1], rngs) if rngs is not None else None
+  rngs = jax.tree_util.tree_map(
+      lambda x: x[-1], rngs) if rngs is not None else None
   return images, rngs
 
 

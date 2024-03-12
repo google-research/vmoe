@@ -491,7 +491,7 @@ class SparseMoeSpmdLayerTest(parameterized.TestCase):
     # All parameters are partitioned across the first axis of the TPU mesh.
     # Thus, each group of devices in one "row" will share the same values for
     # all parameters.
-    param_partition_spec = jax.tree_map(
+    param_partition_spec = jax.tree_util.tree_map(
         lambda _: jax.sharding.PartitionSpec(('expert',)),
         jax.eval_shape(init, jax.random.PRNGKey(0)))
     init_pjit = pjit.pjit(
@@ -586,7 +586,7 @@ class SparseMoeSpmdWithAxesLayerTest(parameterized.TestCase):
     data_axis_resources = PartitionSpec(('X', 'Y'))
     variables_axis_resources = flax.core.freeze({
         'params':
-            jax.tree_map(
+            jax.tree_util.tree_map(
                 lambda x: nn.partitioning.logical_to_mesh_axes(x, axis_rules),
                 nn.partitioning.get_axis_names(variables_shape['params_axes'])),
     })

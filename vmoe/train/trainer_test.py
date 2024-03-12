@@ -732,9 +732,9 @@ class WrapTrainStepWithMixupTest(parameterized.TestCase):
     np.testing.assert_array_less(np.zeros_like(x),
                                  np.abs(metrics['images'] - x))
     # Convert PRNGKeys to int64 to subtract them.
-    rngs = jax.tree_map(lambda x: np.asarray(x, dtype=np.int64), rngs)
-    new_rngs = jax.tree_map(lambda x: np.asarray(x, dtype=np.int64),
-                            train_state.rngs)
+    rngs = jax.tree_util.tree_map(lambda x: np.asarray(x, dtype=np.int64), rngs)
+    new_rngs = jax.tree_util.tree_map(lambda x: np.asarray(x, dtype=np.int64),
+                                      train_state.rngs)
     # Check that both PRNGKeys have been updated.
     np.testing.assert_array_less(
         np.zeros_like(rngs['mixup']), np.abs(rngs['mixup'] - new_rngs['mixup']))

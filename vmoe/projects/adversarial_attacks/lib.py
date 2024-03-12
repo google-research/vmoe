@@ -53,7 +53,7 @@ class ExampleStorage:
 
   def _transfer(self):
     for key, values in self._temp.items():
-      self._data[key].extend(jax.tree_map(np.asarray, values))
+      self._data[key].extend(jax.tree_util.tree_map(np.asarray, values))
       self._temp[key] = []
 
   @property
@@ -99,6 +99,7 @@ def run_pgd_attack(
     config: ml_collections.ConfigDict, workdir: str, mesh: Mesh,
     writer: metric_writers.MetricWriter):
   """Run PGD attack on an entire dataset, using a model from an XM experiment."""
+  del mesh
   # Setup dataset and get the global shape of the image array.
   dataset = get_dataset(config.dataset)
   element_spec: ArraySpecDict = dataset.element_spec  # pytype: disable=annotation-type-mismatch
@@ -141,8 +142,8 @@ def run_pgd_attack(
     rngs = utils.make_rngs(rng_keys, config.get('seed', 0))
     return attacks.AttackState.create(
         max_updates=config.num_updates, router_keys=router_keys, rngs=rngs)
-  state_axis_resources = jax.tree_map(lambda _: PartitionSpec(),
-                                      jax.eval_shape(init_state))
+  state_axis_resources = jax.tree_util.tree_map(lambda _: PartitionSpec(),
+                                                jax.eval_shape(init_state))
   init_state_pjit = pjit.pjit(
       init_state, in_shardings=(), out_shardings=state_axis_resources
   )
@@ -203,7 +204,7 @@ def run_pgd_attack(
             **{f'cw_0/{k}': v for k, v in cw_0.items()},
             **{f'cw_m/{k}': v for k, v in cw_m.items()})
   # Copy state from device to CPU and convert to numpy arrays.
-  state = jax.tree_map(np.asarray, state)
+  state = jax.tree_util.tree_map(np.asarray, state)
   # Process with index=0 saves the PGD state (it's the same for all processes).
   if jax.process_index() == 0:
     state_filepath = os.path.join(workdir, 'pgd_state.npz')

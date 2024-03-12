@@ -107,7 +107,7 @@ def prefetch_to_device(
 
     def enqueue(n):
       for data in itertools.islice(iterator, n):
-        queue.append(jax.tree_map(_to_global, data))
+        queue.append(jax.tree_util.tree_map(_to_global, data))
 
     enqueue(size)
     while queue:
@@ -117,7 +117,7 @@ def prefetch_to_device(
     # If size is None, 0 or negative, simply create jax.Arrays without
     # prefetching.
     for data in iterator:
-      yield jax.tree_map(_to_global, data)
+      yield jax.tree_util.tree_map(_to_global, data)
 
 
 def put_to_devices(host_array: np.ndarray,

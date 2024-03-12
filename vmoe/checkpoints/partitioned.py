@@ -404,7 +404,7 @@ def _replace_jax_with_numpy_in_lazy_array_chunks(
     for lst in lac.chunks.values():
       for arr, _, _ in lst:
         id_to_array[id(arr)] = arr
-  id_to_array = jax.tree_map(np.asarray, id_to_array)
+  id_to_array = jax.tree_util.tree_map(np.asarray, id_to_array)
   for lac in ckpt_shard_to_lazy_array_chunks.values():
     for i, lst in lac.chunks.items():
       lac.chunks[i] = [

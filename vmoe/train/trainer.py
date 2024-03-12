@@ -415,7 +415,8 @@ def restore_or_create_train_state(
           dtype=x.dtype, sharding=x.sharding, global_shape=x.shape)
     restore_kwargs = {
         'state': {
-            'restore_args': jax.tree_map(_array_restore_args_fn, train_state),
+            'restore_args': jax.tree_util.tree_map(
+                _array_restore_args_fn, train_state),
         },
     }
     items = ckpt_manager.restore(
@@ -572,7 +573,7 @@ def mixup(
   Returns:
     A tree with the mixed arrays.
   """
-  arrays, treedef = jax.tree_flatten(tree)
+  arrays, treedef = jax.tree_util.tree_flatten(tree)
   if len(shape) < 2:
     raise ValueError(f"Mixup 'shape' has length {len(shape)}, but it must have "
                      'length >= 2.')
@@ -648,7 +649,7 @@ def train_step(
     logits, metrics = state.apply_fn({'params': params}, images, rngs=rngs)
     metrics = dict(**metrics)
     metrics['main_loss'] = jnp.mean(loss_fn(logits, labels))
-    metrics = jax.tree_map(jnp.mean, metrics)
+    metrics = jax.tree_util.tree_map(jnp.mean, metrics)
     total_loss = metrics['main_loss'] + metrics.get('auxiliary_loss', 0.0)
     metrics['total_loss'] = total_loss
     return total_loss, (next_rngs, metrics)

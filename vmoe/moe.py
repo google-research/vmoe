@@ -428,7 +428,7 @@ def sparse_moe_spmd(target: flax.linen.transforms.Target,
 
     def transformed(scopes, dispatcher, *inputs):
       # Prepare inputs to be processed by each expert.
-      inputs = jax.tree_map(dispatcher.dispatch, inputs)
+      inputs = jax.tree_util.tree_map(dispatcher.dispatch, inputs)
       # Wrap the target with vmap, to pass different parameters and inputs to
       # each expert.
       outputs = flax.core.lift.vmap(
@@ -440,7 +440,7 @@ def sparse_moe_spmd(target: flax.linen.transforms.Target,
       # Combine outputs.
       if has_aux:
         outputs, aux = outputs
-      outputs = jax.tree_map(dispatcher.combine, outputs)
+      outputs = jax.tree_util.tree_map(dispatcher.combine, outputs)
       return (outputs, aux) if has_aux else outputs
 
     return transformed

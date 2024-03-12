@@ -226,7 +226,7 @@ def evaluate_dataset(
   for batch in dataset:
     eval_state = eval_step_pjit(eval_state, params, batch['image'],
                                 batch['labels'], batch[VALID_KEY])
-  return jax.tree_map(lambda x: x.block_until_ready(), eval_state)
+  return jax.tree_util.tree_map(lambda x: x.block_until_ready(), eval_state)
 
 
 def evaluate_step(

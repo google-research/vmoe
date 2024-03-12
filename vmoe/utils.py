@@ -151,8 +151,9 @@ def safe_zip(*iterables) -> Iterator[Tuple[Any, ...]]:
 
 def tree_rngs_split(rngs, num_splits=2):
   """Splits a PyTree of PRNGKeys into num_splits PyTrees."""
-  rngs = jax.tree_map(lambda rng: jax.random.split(rng, num_splits), rngs)
-  slice_rngs = lambda rngs, i: jax.tree_map(lambda rng: rng[i], rngs)
+  rngs = jax.tree_util.tree_map(
+      lambda rng: jax.random.split(rng, num_splits), rngs)
+  slice_rngs = lambda rngs, i: jax.tree_util.tree_map(lambda rng: rng[i], rngs)
   return tuple(slice_rngs(rngs, i) for i in range(num_splits))
 
 

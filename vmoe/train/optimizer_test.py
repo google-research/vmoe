@@ -113,7 +113,7 @@ class CreateOptimizerTest(parameterized.TestCase):
         new_params = optimizer.optax.apply_updates(params, updates)
         return new_params, new_tx_state
 
-      params = jax.tree_map(jnp.asarray, {'x': 0., 'y': 0.})
+      params = jax.tree_util.tree_map(jnp.asarray, {'x': 0., 'y': 0.})
       state = init_fn(params)
       return jax.lax.fori_loop(0, 200, step, (params, state))[0]
 

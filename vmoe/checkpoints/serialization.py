@@ -109,7 +109,7 @@ def msgpack_serialize(pytree: PyTree, in_place: bool = False) -> bytes:
     msgpack-encoded bytes of pytree.
   """
   if not in_place:
-    pytree = jax.tree_map(lambda x: x, pytree)
+    pytree = jax.tree_util.tree_map(lambda x: x, pytree)
   pytree = _np_convert_in_place(pytree)
   pytree = _chunk_array_leaves_in_place(pytree)
   return msgpack.packb(pytree, default=_msgpack_ext_pack, strict_types=True)
@@ -137,7 +137,8 @@ _dtype_from_name = flax.serialization._dtype_from_name
 _ndarray_to_bytes = flax.serialization._ndarray_to_bytes
 _ndarray_from_bytes = flax.serialization._ndarray_from_bytes
 _np_convert_in_place = flax.serialization._np_convert_in_place
-_unchunk_array_leaves_in_place = flax.serialization._unchunk_array_leaves_in_place
+_unchunk_array_leaves_in_place = (
+    flax.serialization._unchunk_array_leaves_in_place)
 _MAX_CHUNK_SIZE = flax.serialization.MAX_CHUNK_SIZE
 # pylint: enable=protected-access
 
@@ -146,6 +147,7 @@ _ARRAY_CHUNKS_MAGIC_KEY = '__msgpack_array_chunk_a87ca2__'
 
 
 class _MsgpackExtType(enum.IntEnum):
+  # pylint: disable=invalid-name
   ndarray = 1
   native_complex = 2
   npscalar = 3
@@ -154,6 +156,7 @@ class _MsgpackExtType(enum.IntEnum):
   slice_nd = 6
   slice_nd_array = 7
   index_info = 8
+  # pylint: enable=invalid-name
 
 
 def _shaped_array_to_bytes(x: core.ShapedArray) -> bytes:
