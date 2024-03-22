@@ -125,29 +125,23 @@ class EvaluatorTest(absltest.TestCase):
       for step in range(1, 10):
         action(step=step, params={})
       call_args_list = metric_writer.write_scalars.call_args_list
-      self.assertLen(call_args_list, 6)
-      self.assertEqual(call_args_list[0],
-                       mock.call(4, {'dataset1/compile_secs': mock.ANY}))
-      self.assertEqual(call_args_list[1],
+      self.assertLen(call_args_list, 4)
+      # First two calls are during compile.
+      # The arguments depends on the device architecture.
+      self.assertEqual(call_args_list[2],
                        mock.call(4,
                                  {'dataset1/duration_secs': mock.ANY,
                                   'dataset1/loss': mock.ANY,
-                                  'dataset1/prec@1': mock.ANY}))
-      self.assertEqual(call_args_list[2],
-                       mock.call(4, {'dataset2/compile_secs': mock.ANY}))
-      self.assertEqual(call_args_list[3],
-                       mock.call(4,
-                                 {'dataset2/duration_secs': mock.ANY,
+                                  'dataset1/prec@1': mock.ANY,
+                                  'dataset2/duration_secs': mock.ANY,
                                   'dataset2/loss': mock.ANY,
                                   'dataset2/prec@1': mock.ANY}))
-      self.assertEqual(call_args_list[4],
+      self.assertEqual(call_args_list[3],
                        mock.call(8,
                                  {'dataset1/duration_secs': mock.ANY,
                                   'dataset1/loss': mock.ANY,
-                                  'dataset1/prec@1': mock.ANY}))
-      self.assertEqual(call_args_list[5],
-                       mock.call(8,
-                                 {'dataset2/duration_secs': mock.ANY,
+                                  'dataset1/prec@1': mock.ANY,
+                                  'dataset2/duration_secs': mock.ANY,
                                   'dataset2/loss': mock.ANY,
                                   'dataset2/prec@1': mock.ANY}))
 

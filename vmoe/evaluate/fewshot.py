@@ -163,7 +163,7 @@ class FewShotPeriodicAction(periodic_actions.PeriodicCallback):
         rngs = {}
       return FewShotState(rngs=rngs)
 
-    def callback_fn(step: int, t: Optional[float], variables: PyTree):
+    def callback_fn(step: int, t: Optional[float], variables: PyTree, **kwargs):
       del t  # Unused.
       # Two-level dict: first is dataset name, second level is (shot, l2_reg).
       all_results = {}
@@ -213,6 +213,7 @@ class FewShotPeriodicAction(periodic_actions.PeriodicCallback):
               for sub_seed in range(seeds_per_step)
           ) / seeds_per_step
         metrics[f'{main_task_prefix}/{name}/{shot}shot'] = accuracy
+      metrics = metrics | {k: v for k, v in kwargs.items() if v is not None}
       metric_writer.write_scalars(step, metrics)
       self.last_metrics = metrics
 

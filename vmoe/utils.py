@@ -24,6 +24,22 @@ import jax.numpy as jnp
 PRNGKey = jax.Array
 
 
+def get_flops_and_seconds_per_device(
+    compiled_fn
+) -> Tuple[float | None, float | None]:
+  """Returns the FLOPs and optimal seconds per device of a compiled function."""
+  cost_analysis = compiled_fn.cost_analysis()[0]
+  flops_per_device = cost_analysis.get('flops')
+  seconds_per_device = cost_analysis.get('optimal_seconds')
+  # Note: XLA returns negative FLOPs and optimal_seconds for some platforms
+  # (e.g. GPUs).
+  if flops_per_device is not None and flops_per_device <= 0:
+    flops_per_device = None
+  if seconds_per_device is not None and seconds_per_device <= 0:
+    seconds_per_device = None
+  return flops_per_device, seconds_per_device
+
+
 def make_rngs(rng_keys: Tuple[str, ...], seed: int) -> Dict[str, PRNGKey]:
   if not rng_keys:
     return dict()

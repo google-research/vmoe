@@ -179,11 +179,19 @@ class EvaluateMultipleDatasets(periodic_actions.PeriodicCallback):
           datasets_element_shape_dtype[name]['labels'],
           datasets_element_shape_dtype[name][VALID_KEY]).compile()
       t1 = time.time()
-      metric_writer.write_scalars(train_step, {f'{name}/compile_secs': t1 - t0})
+      metrics = {f'{name}/compile_secs': t1 - t0}
+      step_flops_per_device, step_seconds_per_device = (
+          utils.get_flops_and_seconds_per_device(eval_step_pjit_ds))
+      if step_flops_per_device is not None:
+        metrics[f'{name}/step_flops_per_device'] = step_flops_per_device
+      if step_seconds_per_device is not None:
+        metrics[f'{name}/step_seconds_per_device'] = step_seconds_per_device
+      metric_writer.write_scalars(train_step, metrics)
       return eval_step_pjit_ds
 
-    def callback_fn(step: int, t: Optional[float], params: PyTree):
+    def callback_fn(step: int, t: Optional[float], params: PyTree, **kwargs):
       del t  # Unused.
+      metrics = {}
       for name, dataset in datasets.items():
         eval_step_pjit_ds = compile_for_dataset(name, params, step)
         # NOTE: Fold-in the dataset name and/or the train_step to the seed
@@ -200,13 +208,14 @@ class EvaluateMultipleDatasets(periodic_actions.PeriodicCallback):
                                       params=params)
         t1 = time.time()
         with jax.spmd_mode('allow_all'):
-          metric_writer.write_scalars(step, {
-              f'{name}/prec@1': eval_state.sum_correct / eval_state.num,
-              f'{name}/loss': eval_state.sum_loss / eval_state.num,
-              f'{name}/duration_secs': t1 - t0,
-          })
+          metrics[f'{name}/prec@1'] = eval_state.sum_correct / eval_state.num
+          metrics[f'{name}/loss'] = eval_state.sum_loss / eval_state.num
+          metrics[f'{name}/duration_secs'] = t1 - t0
         # Reset iterator for the next evaluation.
         dataset.reset()
+
+      metrics = metrics | {k: v for k, v in kwargs.items() if v is not None}
+      metric_writer.write_scalars(step, metrics)
 
     if report_progress is None:
       return callback_fn

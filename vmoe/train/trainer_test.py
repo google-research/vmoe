@@ -260,6 +260,22 @@ class MakeCreateTrainStateFnTest(absltest.TestCase):
     self.assertSetEqual(set(train_state.rngs.keys()), {'foo'})
 
 
+class MakeTrainCostFnTest(parameterized.TestCase):
+
+  @parameterized.parameters(
+      ((None, None), {}),
+      ((3., None), {'flops': 3. * 2 * 42}),
+      ((None, 3.), {'device_seconds': 3. * 2 * 42}),
+      ((5., 3.), {'flops': 5. * 2 * 42, 'device_seconds': 3. * 2 * 42}),
+  )
+  @mock.patch.object(jax, 'device_count', return_value=2)
+  def test(self, flops_and_seconds_per_device, expected, _):
+    with mock.patch.object(trainer.utils, 'get_flops_and_seconds_per_device',
+                           return_value=flops_and_seconds_per_device):
+      fn = trainer.make_train_cost_fn(compiled_fn=mock.Mock())
+      self.assertEqual(fn(42), expected)
+
+
 class MixupTest(parameterized.TestCase):
 
   @parameterized.named_parameters(

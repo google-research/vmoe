@@ -541,6 +541,23 @@ def initialize_train_state_from_checkpoint(
     raise ValueError(f'Unknown initialization method: {name!r}')
 
 
+def make_train_cost_fn(compiled_fn) -> Callable[[int], Dict[str, float]]:
+  """Returns a function that computes the total training cost at a given step."""
+  flops_per_device, seconds_per_device = utils.get_flops_and_seconds_per_device(
+      compiled_fn
+  )
+
+  def fn(step):
+    output = {}
+    if flops_per_device is not None:
+      output['flops'] = flops_per_device * step * jax.device_count()
+    if seconds_per_device is not None:
+      output['device_seconds'] = seconds_per_device * step * jax.device_count()
+    return output
+
+  return fn
+
+
 def mixup(
     rng: PRNGKey,
     tree: PyTree,
@@ -785,24 +802,38 @@ def train_and_evaluate(config: ml_collections.ConfigDict, workdir: str,
   if init_step == 0 and not tf.io.gfile.exists(os.path.join(workdir, 'ckpt/0')):
     multihost_utils.sync_devices('training:ckpt-first')
     _save_checkpoint(init_step, train_state, tr_iter, force=True)
-  # Explicitly compile train_step here and report the compilation time.
+  # Explicitly compile train_step here.
   t0 = time.time()
   train_step_pjit = train_step_pjit.lower(
       train_state,
       datataset_element_shape_dtype['image'],
       datataset_element_shape_dtype['labels']).compile()
   t1 = time.time()
+  # Report compilation time, and flops and optimal seconds per step and device.
   writer.write_scalars(init_step + 1, {'train/compile_secs': t1 - t0})
+  train_step_flops_per_device, train_step_seconds_per_device = (
+      utils.get_flops_and_seconds_per_device(train_step_pjit))
+  if train_step_flops_per_device:
+    writer.write_scalars(
+        init_step + 1,
+        {'train/step_flops_per_device': train_step_flops_per_device})
+  if train_step_seconds_per_device:
+    writer.write_scalars(
+        init_step + 1,
+        {'train/step_seconds_per_device': train_step_seconds_per_device})
+  train_cost_fn = make_train_cost_fn(train_step_pjit)
   for step, batch in zip(range(init_step + 1, train_steps + 1), tr_iter):
     profile_hook(step)
     with jax.profiler.StepTraceAnnotation('train', step_num=step):
       train_state, metrics = train_step_pjit(train_state, batch['image'],
                                              batch['labels'])
-    progress_hook(
-        step, scalar_metrics={f'train/{k}': v for k, v in metrics.items()})
+    progress_hook(step, scalar_metrics=(
+        train_cost_fn(step) | {f'train/{k}': v for k, v in metrics.items()}
+    ))
     _save_checkpoint(step, train_state, tr_iter)
-    evaluation_hook(step, params=train_state.params)
-    fewshot_hook(step, variables={'params': train_state.params})
+    evaluation_hook(step, params=train_state.params, **train_cost_fn(step))
+    fewshot_hook(step, variables={'params': train_state.params},
+                 **train_cost_fn(step))
   ckpt_manager.wait_until_finished()
   if not tf.io.gfile.exists(os.path.join(workdir, f'ckpt/{train_steps}')):
     multihost_utils.sync_devices('training:ckpt-last')
