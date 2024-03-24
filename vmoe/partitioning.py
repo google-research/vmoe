@@ -69,7 +69,7 @@ from absl import logging
 import flax.traverse_util
 import jax
 from jax import lax
-from jax.experimental import maps
+from jax.interpreters import pxla
 import numpy as np
 
 AxisResourcesRegexes = Sequence[Tuple[str, 'UnparsedPartitionSpec']]
@@ -423,7 +423,7 @@ def tree_axis_resources_from_regexes(
 
 def with_sharding_constraint(x: PyTree, partition_spec: PartitionSpec):
   """Specifies a partition_spec for a given array to help pjit's sharding."""
-  if maps.thread_resources.env.physical_mesh.empty or partition_spec is None:
+  if pxla.thread_resources.env.physical_mesh.empty or partition_spec is None:
     return x
   else:
     return lax.with_sharding_constraint(x, partition_spec)

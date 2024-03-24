@@ -24,8 +24,8 @@ from clu.data import dataset_iterator
 import flax.core
 import flax.struct
 import jax
-from jax.experimental import maps
 from jax.experimental import pjit
+from jax.interpreters import pxla
 import jax.numpy as jnp
 from vmoe import utils
 from vmoe.data import input_pipeline
@@ -143,7 +143,7 @@ class EvaluateMultipleDatasets(periodic_actions.PeriodicCallback):
         sum_correct=jax.ShapeDtypeStruct(shape=(), dtype=jnp.float32),
         sum_loss=jax.ShapeDtypeStruct(shape=(), dtype=jnp.float32),
         rngs=jax.eval_shape(lambda: utils.make_rngs(rng_keys, 0)))
-    mesh = maps.thread_resources.env.physical_mesh
+    mesh = pxla.thread_resources.env.physical_mesh
     assert not mesh.empty, 'The physical mesh is empty.'
     sharding = jax.sharding.NamedSharding(mesh, PartitionSpec())
     eval_state_dtype_struct = tree_map(

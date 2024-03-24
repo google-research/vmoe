@@ -30,8 +30,8 @@ import flax.training.train_state
 import flax.traverse_util
 import jax
 from jax import lax
-from jax.experimental import maps
 from jax.experimental import pjit
+from jax.interpreters import pxla
 import jax.numpy as jnp
 import ml_collections
 import numpy as np
@@ -289,7 +289,7 @@ def create_or_reuse_train_state(
   Returns:
     A TrainState.
   """
-  mesh = mesh or maps.thread_resources.env.physical_mesh
+  mesh = mesh or pxla.thread_resources.env.physical_mesh
   # Flatten input train state and keep the ShapeDtypeStruct for the arrays that
   # must be created from scratch.
   train_state_dict = flax.traverse_util.flatten_dict(
@@ -395,7 +395,7 @@ def restore_or_create_train_state(
   Returns:
     A TrainState and (optionally) the last_seen_index.
   """
-  mesh = mesh or maps.thread_resources.env.physical_mesh
+  mesh = mesh or pxla.thread_resources.env.physical_mesh
   train_state_shape_dtype = jax.eval_shape(initialize_fn)
   train_state_axis_resources = partitioning.tree_axis_resources_from_regexes(
       tree=train_state_shape_dtype,

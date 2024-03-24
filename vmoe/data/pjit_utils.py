@@ -20,7 +20,7 @@ from typing import Any, Iterator, List, Optional, Sequence, Union
 from absl import logging
 from clu.data import dataset_iterator
 import jax
-from jax.experimental import maps
+from jax.interpreters import pxla
 import numpy as np
 import tensorflow as tf
 
@@ -33,7 +33,7 @@ def get_dataset_shape_dtype_struct(
     mesh: Optional[Mesh] = None,
 ) -> PyTree:
   """Returns the jax.ShapeDtypeStruct."""
-  mesh = mesh or maps.thread_resources.env.physical_mesh
+  mesh = mesh or pxla.thread_resources.env.physical_mesh
   assert mesh is not None and not mesh.empty, f'No mesh or empty mesh. {mesh=}'
 
   pspec = jax.sharding.PartitionSpec(mesh.axis_names,)
@@ -73,7 +73,7 @@ def prefetch_to_device(
     The original items from the iterator where each ndarray is now sharded as
     specified by `axis_resources`.
   """
-  mesh = mesh or maps.thread_resources.env.physical_mesh
+  mesh = mesh or pxla.thread_resources.env.physical_mesh
   assert mesh is not None and not mesh.empty, f'No mesh or empty mesh. {mesh=}'
 
   pspec = jax.sharding.PartitionSpec(mesh.axis_names,)
