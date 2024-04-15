@@ -207,7 +207,7 @@ class NoisyTopItemsPerExpertRouter(nn.Module):
     gates_softmax = self._compute_gates_softmax(inputs, self.num_experts)
     dispatcher, metrics = self._create_dispatcher_and_metrics(gates_softmax)
     metrics["auxiliary_loss"] = 0.
-    return dispatcher, metrics
+    return dispatcher, metrics  # pytype: disable=bad-return-type
 
   @nn.nowrap
   def _compute_gates_softmax(self, inputs: Array, num_experts: int) -> Array:

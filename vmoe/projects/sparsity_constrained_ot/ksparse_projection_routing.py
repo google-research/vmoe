@@ -133,7 +133,7 @@ class KSparseProjectionTransportTopItemsPerExpertRouter(
     metrics["num_items_per_expert_max"] = jnp.max(num_items_per_expert, axis=1)
     metrics["num_items_per_expert_avg"] = jnp.mean(num_items_per_expert, axis=1)
     metrics["auxiliary_loss"] = 0.
-    return dispatcher, metrics
+    return dispatcher, metrics  # pytype: disable=bad-return-type
 
   @nn.nowrap
   def _compute_gates(
