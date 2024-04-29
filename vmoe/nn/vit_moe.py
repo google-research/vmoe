@@ -34,7 +34,6 @@ MultiHeadDotProductAttention = nn.MultiHeadDotProductAttention
 Shape = Iterable[int]
 
 
-
 # Slight modification of the VisionTransformer's MlpBlock API.
 class MlpBlock(models_vit.MlpBlock):
   dtype: Optional[DType] = None
