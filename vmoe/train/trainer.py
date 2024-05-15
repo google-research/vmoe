@@ -634,7 +634,7 @@ def mixup(
     a = alpha.reshape(alpha.shape + (1,) * (x.ndim - batch_ndim))
     return sum(a[i] * jnp.roll(x, -i, axis=roll_axis) for i in range(shape[-1]))
   arrays = list(map(mix, arrays))
-  return jax.tree_unflatten(treedef, arrays)
+  return jax.tree.unflatten(treedef, arrays)
 
 
 def override_base_config(
