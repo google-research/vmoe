@@ -62,7 +62,7 @@ class PyTreeCheckpointHandlerWithStructure(
     orbax_checkpoint.PyTreeCheckpointHandler):
 
   def structure(self, directory):
-    return self._read_aggregate_file(directory)  # pylint: disable=protected-access
+    return self._handler_impl._read_aggregate_file(directory)  # pylint: disable=protected-access
 
 
 def initialize_from_orbax(
