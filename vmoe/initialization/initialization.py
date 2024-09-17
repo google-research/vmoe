@@ -127,6 +127,8 @@ def initialize_from_orbax(
       tree=structure, axis_resources_regexes=axis_resources_regexes or ())
 
   def _array_restore_args(value, spec):
+    if value is None:
+      return None
     if isinstance(value, jax.ShapeDtypeStruct):
       sharding = NamedSharding(mesh, spec)
       return orbax_checkpoint.ArrayRestoreArgs(
@@ -135,7 +137,11 @@ def initialize_from_orbax(
       return orbax_checkpoint.RestoreArgs()
 
   restore_args = jax.tree_util.tree_map(
-      _array_restore_args, structure, axis_resources)
+      _array_restore_args,
+      structure,
+      axis_resources,
+      is_leaf=lambda x: x is None,
+  )
   ckpt = ckptr.restore(directory, restore_args=restore_args)
   return mapping.map_state_dict(ckpt, target, rules, **map_state_dict_kwargs)
 
