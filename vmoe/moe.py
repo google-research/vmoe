@@ -66,6 +66,7 @@ class BaseDispatcher(abc.ABC):
   combine might not be the same as the ones at dispatch (e.g. if the expert
   changes the shape of the data).
   """
+  combine_weights: Array
 
   @abc.abstractmethod
   def dispatch(self, data: Array) -> Array:
