@@ -28,7 +28,7 @@ def get_flops_and_seconds_per_device(
     compiled_fn
 ) -> Tuple[float | None, float | None]:
   """Returns the FLOPs and optimal seconds per device of a compiled function."""
-  cost_analysis = compiled_fn.cost_analysis()[0]
+  cost_analysis = compiled_fn.cost_analysis()
   flops_per_device = cost_analysis.get('flops')
   seconds_per_device = cost_analysis.get('optimal_seconds')
   # Note: XLA returns negative FLOPs and optimal_seconds for some platforms
