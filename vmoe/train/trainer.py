@@ -411,19 +411,18 @@ def restore_or_create_train_state(
     def _array_restore_args_fn(x: jax.ShapeDtypeStruct):
       return orbax.checkpoint.ArrayRestoreArgs(
           dtype=x.dtype, sharding=x.sharding, global_shape=x.shape)
-    restore_kwargs = {
-        'state': {
-            'restore_args': jax.tree_util.tree_map(
-                _array_restore_args_fn, train_state),
-        },
-    }
+    restore_args = jax.tree_util.tree_map(_array_restore_args_fn, train_state)
     items = ckpt_manager.restore(
         step,
-        items={
-            'state': train_state,
-            'dataset_iterator': {'last_seen_index': 0},
-        },
-        restore_kwargs=restore_kwargs)
+        args=orbax.checkpoint.args.Composite(
+            state=orbax.checkpoint.args.PyTreeRestore(
+                train_state, restore_args=restore_args
+            ),
+            dataset_iterator=orbax.checkpoint.args.JsonRestore(
+                {'last_seen_index': 0}
+            ),
+        ),
+    )
     return items['state'], items['dataset_iterator']['last_seen_index']
 
   if initialization_kwargs:
