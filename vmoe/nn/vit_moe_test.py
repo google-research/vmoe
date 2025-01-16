@@ -242,7 +242,7 @@ class VitMoeTest(parameterized.TestCase):
     shapes = flax.core.unfreeze(shapes)
     self.assertDictEqual(shapes['params']['Encoder']['posembed_input'],
                          {'pos_embedding': (1, seq_length, 8)})
-    self.assertDictContainsSubset(params_subset, shapes['params'])
+    self.assertEqual(shapes['params'], {**shapes['params'], **params_subset})
 
 
 if __name__ == '__main__':
