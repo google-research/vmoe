@@ -19,7 +19,7 @@ source env/bin/activate;
 
 if ( which nvidia-smi &> /dev/null ); then
   # This assumes CUDA 11 and cuDNN 8.2.
-  # Check https://github.com/google/jax#pip-installation-gpu-cuda for alternatives.
+  # Check https://github.com/jax-ml/jax#pip-installation-gpu-cuda for alternatives.
   pip install -q 'jax[cuda]' -f https://storage.googleapis.com/jax-releases/jax_releases.html;
 else
   # Since pjit does not work on CPUs, if nvidia-smi is not found, we assume that
@@ -31,7 +31,7 @@ fi;
 python3 -m pip install -q --upgrade pip;
 # Upgrade the following packages from GIT, since we use some features not part
 # of any release yet.
-pip install -q --upgrade git+https://github.com/google/jax.git;
+pip install -q --upgrade git+https://github.com/jax-ml/jax.git;
 pip install -q --upgrade git+https://github.com/google/flax.git;
 pip install -q --upgrade git+https://github.com/google/CommonLoopUtils.git;
 # Install the rest of necessary packages from PyPi.
