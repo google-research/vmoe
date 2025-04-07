@@ -207,10 +207,9 @@ class EvaluateMultipleDatasets(periodic_actions.PeriodicCallback):
                                       dataset=ds_iter,
                                       params=params)
         t1 = time.time()
-        with jax.spmd_mode('allow_all'):
-          metrics[f'{name}/prec@1'] = eval_state.sum_correct / eval_state.num
-          metrics[f'{name}/loss'] = eval_state.sum_loss / eval_state.num
-          metrics[f'{name}/duration_secs'] = t1 - t0
+        metrics[f'{name}/prec@1'] = eval_state.sum_correct / eval_state.num
+        metrics[f'{name}/loss'] = eval_state.sum_loss / eval_state.num
+        metrics[f'{name}/duration_secs'] = t1 - t0
         # Reset iterator for the next evaluation.
         dataset.reset()
 

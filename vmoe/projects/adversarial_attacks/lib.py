@@ -216,20 +216,19 @@ def run_pgd_attack(
                      sum_loss=state.sum_loss,
                      **{f'sum_iou_experts/{k}': v
                         for k, v in state.sum_iou_experts.items()})
-  with jax.spmd_mode('allow_all'):
-    # Statistics before the adversarial attack.
-    writer.write_scalars(0, {
-        'error': 1 - state.num_correct[0] / state.num_images,
-        'loss': state.sum_loss[0] / state.num_images,
-    })
-    # Statistics after the adversarial attack.
-    writer.write_scalars(config.num_updates, {
-        'error': 1 - state.num_correct[1] / state.num_images,
-        'loss': state.sum_loss[1] / state.num_images,
-        'prediction_changes': state.num_changes / state.num_images,
-        **{f'routing_changes/{k}': 1 - v / state.num_images
-           for k, v in state.sum_iou_experts.items()}
-    })
+  # Statistics before the adversarial attack.
+  writer.write_scalars(0, {
+      'error': 1 - state.num_correct[0] / state.num_images,
+      'loss': state.sum_loss[0] / state.num_images,
+  })
+  # Statistics after the adversarial attack.
+  writer.write_scalars(config.num_updates, {
+      'error': 1 - state.num_correct[1] / state.num_images,
+      'loss': state.sum_loss[1] / state.num_images,
+      'prediction_changes': state.num_changes / state.num_images,
+      **{f'routing_changes/{k}': 1 - v / state.num_images
+         for k, v in state.sum_iou_experts.items()}
+  })
   # Each process optionally stores the processed examples.
   if example_storage:
     logging.info('Saving examples to %r...', example_storage.filepath)
