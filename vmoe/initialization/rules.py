@@ -300,7 +300,7 @@ class ZoomTransformation(Transformation):
           lambda xx: scipy.ndimage.zoom(xx, zoom, order=1),
           callback_shape_dtype,
           x,
-          vectorized=False,
+          vmap_method='sequential',
       )
 
     mesh = pxla.thread_resources.env.physical_mesh
