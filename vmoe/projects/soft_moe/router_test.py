@@ -22,6 +22,8 @@ import numpy as np
 import scipy.spatial
 from vmoe.projects.soft_moe import router
 
+jax.config.update('jax_threefry_partitionable', False)
+
 pdist = scipy.spatial.distance.pdist
 squareform = scipy.spatial.distance.squareform
 
