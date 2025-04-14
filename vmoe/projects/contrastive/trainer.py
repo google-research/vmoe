@@ -317,7 +317,7 @@ def train_and_evaluate(config: ml_collections.ConfigDict, workdir: str,
       summarizer=summarizer)
 
   train_step_pjit = jax.jit(
-      fun=train_step_fn,
+      train_step_fn,
       out_shardings=(
           jax.tree_util.tree_map(lambda x: x.sharding, train_state),
           None,
