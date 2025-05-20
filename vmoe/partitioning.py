@@ -87,7 +87,7 @@ def get_array_sharding_or_default(arr: jax.Array) -> jax.sharding.Sharding:
   if hasattr(arr, 'sharding'):
     return arr.sharding
   else:
-    return jax.sharding.GSPMDSharding.get_replicated(jax.devices())
+    return NamedSharding(Mesh(jax.devices(), 'x'), PartitionSpec())
 
 
 def process_has_contiguous_device_slice(devices: np.ndarray,
