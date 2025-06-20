@@ -1,4 +1,4 @@
-# Copyright 2024 Google LLC.
+# Copyright 2025 Google LLC.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -118,7 +118,7 @@ class StatelessAttackPGDTest(parameterized.TestCase):
       return jax.numpy.square(x - y).sum()
 
     pgd_attack_stateless_jitted = jax.jit(
-        fun=functools.partial(
+        functools.partial(
             attacks.stateless_attack_pgd, max_epsilon=0.1, num_updates=1,
             apply_fn=apply_fn, loss_fn=loss_fn))
     new_x, _ = pgd_attack_stateless_jitted(x, y, {})
