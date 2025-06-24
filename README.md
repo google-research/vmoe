@@ -16,7 +16,7 @@ tuned.
 We also provide checkpoints, a notebook, and a config for Efficient Ensemble of
 Experts (E<sup>3</sup>), presented in the paper:
 
-- [Sparse MoEs meet Efficient Ensembles](https://openreview.net/forum?id=i0ZM36d2qU), by
+- [Sparse MoEs meet Efficient Ensembles](https://openreview.net/forum?id=i0ZM36d2qU&noteId=Rtlnlx5PzY), by
   James Urquhart Allingham, Florian Wenzel, Zelda E Mariet, Basil Mustafa,
   Joan Puigcerver, Neil Houlsby, Ghassen Jerfel, Vincent Fortuin,
   Balaji Lakshminarayanan, Jasper Snoek, Dustin Tran,Carlos Riquelme Ruiz,
