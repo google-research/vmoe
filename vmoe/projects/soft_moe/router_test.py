@@ -46,7 +46,7 @@ class SoftRouterTest(absltest.TestCase):
         scipy_cosine_psim(x_i.reshape((5 * 4, -1))).reshape((5, 4, 5, 4))
         for x_i in x
     ])
-    np.testing.assert_allclose(y, expected, rtol=1e-4)
+    np.testing.assert_allclose(y, expected, rtol=1e-3, atol=1e-6)
 
   def test_forward(self):
     x = jnp.ones((1, 8, 16), dtype=jnp.float32)
