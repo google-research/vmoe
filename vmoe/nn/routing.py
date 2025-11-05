@@ -95,7 +95,7 @@ class NoisyTopExpertsPerItemRouter(nn.Module):
           key=self.make_rng("gating"), shape=gates_logits.shape)
       gates_logits_noisy = gates_logits + logits_noise
       gates_softmax_noisy = jax.nn.softmax(gates_logits_noisy)
-      load_loss = jax.vmap(
+      load_loss = jax.vmap(  # pytype: disable=wrong-arg-types
           functools.partial(
               self._load_auxiliary_loss,
               num_selected_experts=self.num_selected_experts,

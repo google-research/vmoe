@@ -111,7 +111,7 @@ class KLProjectionNoisyTopExpertsPerItemRouter(
         # no need to compute the loss in this case
         load_loss = 0.0
       else:
-        load_loss = jax.vmap(
+        load_loss = jax.vmap(  # pytype: disable=wrong-arg-types
             functools.partial(
                 self._load_auxiliary_loss,
                 num_selected_experts=self.num_selected_experts,
