@@ -418,9 +418,7 @@ def restore_or_create_train_state(
             state=orbax.checkpoint.args.PyTreeRestore(
                 train_state, restore_args=restore_args
             ),
-            dataset_iterator=orbax.checkpoint.args.JsonRestore(
-                {'last_seen_index': 0}
-            ),
+            dataset_iterator=orbax.checkpoint.args.JsonRestore(),
         ),
     )
     return items['state'], items['dataset_iterator']['last_seen_index']
