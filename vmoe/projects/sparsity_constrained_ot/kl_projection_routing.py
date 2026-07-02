@@ -67,7 +67,7 @@ class KLProjectionNoisyTopExpertsPerItemRouter(
     return dispatcher, metrics
 
   @nn.nowrap
-  def _compute_gates_softmax_and_metrics(
+  def _compute_gates_softmax_and_metrics(  # pyrefly: ignore[bad-override]
       self, inputs: Array, num_experts: int) -> Tuple[Array, Array, Metrics]:
     if inputs.ndim != 3:
       raise ValueError(f"inputs.ndim must be 3, but it is {inputs.ndim}")

@@ -53,7 +53,7 @@ class MlpMoeWithNoisyTopExpertsPerItemEnsembleRouter(
                                                        self.deterministic)
     router_kwargs['ensemble_size'] = _parse(self.ensemble_size)
     return NoisyTopExpertsPerItemEnsembleRouter(
-        dtype=self.dtype, name='Router', **router_kwargs)
+        dtype=self.dtype, name='Router', **router_kwargs)  # pyrefly: ignore[bad-argument-type]
 
   @nn.compact
   def __call__(self, inputs):
@@ -88,7 +88,7 @@ class EncoderMoeEnsemble(vmoe.nn.vit_moe.EncoderMoe):
     dense_mlp_params = dict(mlp_dim=self.mlp_dim,
                             dropout_rate=self.dropout_rate)
     moe_mlp_params = {**dense_mlp_params, **(self.moe or {})}
-    ensemble_size = _parse(moe_mlp_params.get('ensemble_size'))
+    ensemble_size = _parse(moe_mlp_params.get('ensemble_size'))  # pyrefly: ignore[bad-argument-type]
     moe_mlp_layers = moe_mlp_params.pop('layers', ())
 
     dense_mlp_cls = vmoe.utils.partialclass(
@@ -108,7 +108,7 @@ class EncoderMoeEnsemble(vmoe.nn.vit_moe.EncoderMoe):
     metrics = {}
     is_first_moe_mlp_layer = True
     for block in range(self.num_layers):
-      if block in moe_mlp_layers:
+      if block in moe_mlp_layers:  # pyrefly: ignore[not-iterable]
         if is_first_moe_mlp_layer:
           x = jnp.repeat(x, ensemble_size, axis=0)
           is_first_moe_mlp_layer = False

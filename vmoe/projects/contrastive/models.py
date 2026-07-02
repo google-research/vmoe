@@ -160,10 +160,10 @@ class TwoTower(nn.Module):
 
     if images is None:
       # Return text embeddings and metrics.
-      return ztxt, metrics
+      return ztxt, metrics  # pyrefly: ignore[bad-return]
     elif texts is None:
       # Return image embeddings and metrics.
-      return zimg, metrics
+      return zimg, metrics  # pyrefly: ignore[bad-return]
     else:
       # Compute logits as the dot product of the image and text embeddings.
       logits = jnp.einsum('...md,...nd->...mn', zimg, ztxt)

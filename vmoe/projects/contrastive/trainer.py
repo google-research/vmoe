@@ -246,7 +246,7 @@ def train_step(
     return total_loss, (next_rngs, metrics)
 
   compute_grads_and_metrics = accumulate_gradients_and_metrics(
-      compute_grads_and_metrics, microsteps)
+      compute_grads_and_metrics, microsteps)  # pyrefly: ignore[bad-argument-type]
   grads, (next_rngs, metrics) = compute_grads_and_metrics(
       state.params, images, texts, state.rngs)
   state, global_norms = state.apply_gradients_and_compute_global_norms(

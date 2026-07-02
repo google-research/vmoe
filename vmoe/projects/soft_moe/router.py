@@ -61,7 +61,7 @@ class SoftRouter(nn.Module):
     _, group_size, dim = inputs.shape
     if self.num_slots is None:
       num_slots = moe.compute_capacity(
-          group_size, self.num_experts, self.capacity_factor,
+          group_size, self.num_experts, self.capacity_factor,  # pyrefly: ignore[bad-argument-type]
           ceil_or_round='round', multiple_of=1)
     else:
       num_slots = self.num_slots

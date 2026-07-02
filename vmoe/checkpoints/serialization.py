@@ -222,7 +222,7 @@ def _lazy_array_chunks_encode(
 
   state = {_ARRAY_CHUNKS_MAGIC_KEY: True}
   for array_index in lazy_array_chunks.chunks.keys():
-    state[str(array_index)] = list(
+    state[str(array_index)] = list(  # pyrefly: ignore[unsupported-operation]
         map(_encode_chunk, lazy_array_chunks.iter_chunks(array_index)))
   return state
 

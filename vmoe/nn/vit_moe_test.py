@@ -181,7 +181,7 @@ class VitMoeTest(parameterized.TestCase):
         }
     }
     if not position_emb_kwargs:
-      expected_shapes['params']['Encoder']['posembed_input'] = {
+      expected_shapes['params']['Encoder']['posembed_input'] = {  # pyrefly: ignore[bad-assignment]
           'pos_embedding': (1, 4, 8),
       }
     self.assertDictEqual(shapes, expected_shapes)
@@ -199,8 +199,8 @@ class VitMoeTest(parameterized.TestCase):
 
   def test_forward_moe_dropout(self):
     config = copy.deepcopy(DEFAULT_TEST_CONFIG)
-    config['encoder']['moe']['dropout_rate'] = 0.2
-    config['encoder']['moe']['split_rngs'] = ('dropout',)
+    config['encoder']['moe']['dropout_rate'] = 0.2  # pyrefly: ignore[bad-assignment]
+    config['encoder']['moe']['split_rngs'] = ('dropout',)  # pyrefly: ignore[bad-assignment]
     model = vit_moe.VisionTransformerMoe(**config, deterministic=False)
     rngs = dict(params=jax.random.PRNGKey(0),
                 gating=jax.random.PRNGKey(1),

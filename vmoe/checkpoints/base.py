@@ -91,8 +91,8 @@ def iterate_complete_steps_for_prefix(
     Integers corresponding to the completed step numbers for the given prefix.
   """
   if not suffixes:
-    suffixes = (None,)
-  suffixes = set(suffixes)
+    suffixes = (None,)  # pyrefly: ignore[bad-assignment]
+  suffixes = set(suffixes)  # pyrefly: ignore[bad-argument-type, bad-assignment]
 
   def _parse_step_and_suffix_or_error(filepath):
     m = CHECKPOINT_REGEX.fullmatch(filepath)

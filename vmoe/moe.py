@@ -313,7 +313,7 @@ def get_top_experts_per_item_dispatcher(
         # Target number of tokens to split among the `num_experts` experts.
         num_tokens=group_size * num_selected_experts,
         num_experts=num_experts,
-        capacity_factor=capacity_factor,
+        capacity_factor=capacity_factor,  # pyrefly: ignore[bad-argument-type]
         ceil_or_round=capacity_ceil_or_round,
         multiple_of=capacity_multiple_of)
 
@@ -372,7 +372,7 @@ def get_top_items_per_expert_dispatcher(
         # Target number of tokens to split among the `num_experts` experts.
         num_tokens=group_size,
         num_experts=num_experts,
-        capacity_factor=capacity_factor,
+        capacity_factor=capacity_factor,  # pyrefly: ignore[bad-argument-type]
         ceil_or_round=capacity_ceil_or_round,
         multiple_of=capacity_multiple_of)
 
@@ -441,7 +441,7 @@ def sparse_moe_spmd(target: flax.linen.transforms.Target,
       if has_aux:
         outputs, aux = outputs
       outputs = jax.tree_util.tree_map(dispatcher.combine, outputs)
-      return (outputs, aux) if has_aux else outputs
+      return (outputs, aux) if has_aux else outputs  # pyrefly: ignore[unbound-name]
 
     return transformed
 
@@ -584,7 +584,7 @@ def _get_top_experts_per_item_common(
   expert_index = jnp.swapaxes(expert_index.reshape(-1, group_size), 0, 1)
   if batch_priority:
     # Permute the items to their original order.
-    inv_perm = jnp.argsort(perm)
+    inv_perm = jnp.argsort(perm)  # pyrefly: ignore[unbound-name]
     expert_index = expert_index[inv_perm]
     buffer_index = buffer_index[inv_perm]
   return combine_weights, expert_index, buffer_index

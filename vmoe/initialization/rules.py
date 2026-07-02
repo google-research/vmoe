@@ -148,7 +148,7 @@ class RegexRule(Rule):
   def get_transformation(
       self, source: Array,
       target: Union[Array, jax.ShapeDtypeStruct]) -> 'Transformation':
-    return CopyTransformation(target_shape_dtype=self.get_shape_dtype(target),
+    return CopyTransformation(target_shape_dtype=self.get_shape_dtype(target),  # pyrefly: ignore[bad-argument-type]
                               array=source)
 
   def get_shape_dtype(self, array: Array) -> jax.ShapeDtypeStruct:
@@ -308,7 +308,7 @@ class ZoomTransformation(Transformation):
       return _pure_callback_zoom(source)
     else:
       source = partitioning.with_sharding_constraint(source, P())
-      return shard_map(
+      return shard_map(  # pyrefly: ignore[not-callable]
           _pure_callback_zoom,
           mesh,
           in_specs=P(*(None,) * source.ndim),

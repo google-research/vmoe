@@ -60,7 +60,7 @@ class KSparseProjectionTransportTopExpertsPerItemRouter(
     return dispatcher, metrics
 
   @nn.nowrap
-  def _compute_gates_softmax_and_metrics(
+  def _compute_gates_softmax_and_metrics(  # pyrefly: ignore[bad-override]
       self, inputs: Array, num_experts: int) -> Tuple[Array, Array, Metrics]:
     if inputs.ndim != 3:
       raise ValueError(f"inputs.ndim must be 3, but it is {inputs.ndim}")
@@ -79,13 +79,13 @@ class KSparseProjectionTransportTopExpertsPerItemRouter(
     gates_ot = sparse_ot_fun(sim_matrix=gates_softmax)
     metrics = {"auxiliary_loss": 0.0}
     num_items_per_expert = jnp.count_nonzero(gates_ot, axis=1)
-    metrics["num_items_per_expert_min"] = jnp.min(num_items_per_expert, axis=1)
-    metrics["num_items_per_expert_max"] = jnp.max(num_items_per_expert, axis=1)
-    metrics["num_items_per_expert_avg"] = jnp.mean(num_items_per_expert, axis=1)
+    metrics["num_items_per_expert_min"] = jnp.min(num_items_per_expert, axis=1)  # pyrefly: ignore[bad-assignment]
+    metrics["num_items_per_expert_max"] = jnp.max(num_items_per_expert, axis=1)  # pyrefly: ignore[bad-assignment]
+    metrics["num_items_per_expert_avg"] = jnp.mean(num_items_per_expert, axis=1)  # pyrefly: ignore[bad-assignment]
     num_experts_per_item = jnp.count_nonzero(gates_ot, axis=2)
-    metrics["num_experts_per_item_min"] = jnp.min(num_experts_per_item, axis=1)
-    metrics["num_experts_per_item_max"] = jnp.max(num_experts_per_item, axis=1)
-    metrics["num_experts_per_item_avg"] = jnp.mean(num_experts_per_item, axis=1)
+    metrics["num_experts_per_item_min"] = jnp.min(num_experts_per_item, axis=1)  # pyrefly: ignore[bad-assignment]
+    metrics["num_experts_per_item_max"] = jnp.max(num_experts_per_item, axis=1)  # pyrefly: ignore[bad-assignment]
+    metrics["num_experts_per_item_avg"] = jnp.mean(num_experts_per_item, axis=1)  # pyrefly: ignore[bad-assignment]
     return gates_ot, gates_softmax, metrics  # pytype: disable=bad-return-type  # jax-ndarray
 
   @nn.nowrap

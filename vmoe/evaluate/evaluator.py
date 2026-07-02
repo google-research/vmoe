@@ -139,9 +139,9 @@ class EvaluateMultipleDatasets(periodic_actions.PeriodicCallback):
     # steps. If the shapes of inputs/outputs for all datasets is the same, this
     # will be only compiled once.
     eval_state_dtype_struct = EvalState(  # pytype: disable=wrong-arg-types  # dataclass_transform
-        num=jax.ShapeDtypeStruct(shape=(), dtype=jnp.float32),
-        sum_correct=jax.ShapeDtypeStruct(shape=(), dtype=jnp.float32),
-        sum_loss=jax.ShapeDtypeStruct(shape=(), dtype=jnp.float32),
+        num=jax.ShapeDtypeStruct(shape=(), dtype=jnp.float32),  # pyrefly: ignore[bad-argument-type]
+        sum_correct=jax.ShapeDtypeStruct(shape=(), dtype=jnp.float32),  # pyrefly: ignore[bad-argument-type]
+        sum_loss=jax.ShapeDtypeStruct(shape=(), dtype=jnp.float32),  # pyrefly: ignore[bad-argument-type]
         rngs=jax.eval_shape(lambda: utils.make_rngs(rng_keys, 0)))
     mesh = pxla.thread_resources.env.physical_mesh
     assert not mesh.empty, 'The physical mesh is empty.'
@@ -161,9 +161,9 @@ class EvaluateMultipleDatasets(periodic_actions.PeriodicCallback):
     def make_eval_state_pjit(seed):
       rngs = utils.make_rngs(rng_keys, seed)
       return EvalState(  # pytype: disable=wrong-arg-types  # jnp-type
-          num=jnp.zeros((), dtype=jnp.float32),
-          sum_correct=jnp.zeros((), dtype=jnp.float32),
-          sum_loss=jnp.zeros((), dtype=jnp.float32),
+          num=jnp.zeros((), dtype=jnp.float32),  # pyrefly: ignore[bad-argument-type]
+          sum_correct=jnp.zeros((), dtype=jnp.float32),  # pyrefly: ignore[bad-argument-type]
+          sum_loss=jnp.zeros((), dtype=jnp.float32),  # pyrefly: ignore[bad-argument-type]
           rngs=rngs)
 
     @cachetools.cached(

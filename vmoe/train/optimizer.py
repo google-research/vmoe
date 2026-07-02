@@ -55,10 +55,10 @@ def add_decayed_weights(
   if not weight_decay:
     return optax.identity()
   elif isinstance(weight_decay, (list, tuple)):
-    weight_decay = [(re.compile(k), v) for k, v in weight_decay]
+    weight_decay = [(re.compile(k), v) for k, v in weight_decay]  # pyrefly: ignore[bad-assignment]
     def weight_decay_fn(key):
-      for regex, value in weight_decay:
-        if regex.search(key):
+      for regex, value in weight_decay:  # pyrefly: ignore[not-iterable]
+        if regex.search(key):  # pyrefly: ignore[missing-attribute]
           return value
       return 0.
   else:
@@ -84,7 +84,7 @@ def add_decayed_weights(
         updates, flax.traverse_util.unflatten_dict(flatupdates, sep='/'))
     return updates, state
 
-  return optax.GradientTransformation(init_fn, update_fn)
+  return optax.GradientTransformation(init_fn, update_fn)  # pyrefly: ignore[bad-argument-type]
 
 
 def create_optimizer(
@@ -104,7 +104,7 @@ def create_optimizer(
   # WARNING: Use this with caution. Notice that this is NOT equivalent to having
   # a specific learning rate per parameter, since the scale that you use here
   # will affect the state of the optimizers like momentum.
-  ops.append(gradient_scaling(gradient_scale))
+  ops.append(gradient_scaling(gradient_scale))  # pyrefly: ignore[bad-argument-type]
   # Optionally, add gradient clipping.
   ops.append(gradient_clipping(**(gradient_clip or {})))
   # Optimizer-dependant scaling of gradients.
@@ -159,7 +159,7 @@ def freeze_weights(
   # Create a single regex from trainable_pattern/frozen_pattern.
   pattern = trainable_pattern or frozen_pattern
   if not isinstance(pattern, str):
-    pattern = '|'.join(f'(?:{x})' for x in pattern)
+    pattern = '|'.join(f'(?:{x})' for x in pattern)  # pyrefly: ignore[not-iterable]
   pattern = re.compile(pattern)
 
   def frozen_fn(params: optax.Params) -> PyTree:
@@ -210,11 +210,11 @@ def gradient_scaling(
   if not scales:
     return optax.identity()
 
-  scales = [(re.compile(k), v) for k, v in scales]
+  scales = [(re.compile(k), v) for k, v in scales]  # pyrefly: ignore[bad-assignment]
 
   def scale_fn(key):
     for regex, value in scales:
-      if regex.search(key):
+      if regex.search(key):  # pyrefly: ignore[missing-attribute]
         return value
     return 1.
 
@@ -232,7 +232,7 @@ def gradient_scaling(
         updates, flax.traverse_util.unflatten_dict(flatupdates, sep='/'))
     return updates, state
 
-  return optax.GradientTransformation(init_fn, update_fn)
+  return optax.GradientTransformation(init_fn, update_fn)  # pyrefly: ignore[bad-argument-type]
 
 
 def scale_by_big_vision_adafactor(

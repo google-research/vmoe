@@ -492,7 +492,7 @@ def get_train_steps_and_epochs(
                      f'but not both: train_steps = {train_steps!r}, '
                      f'train_epochs = {train_epochs!r}')
   if not train_steps:
-    train_steps = int(np.ceil(train_epochs * train_examples / train_batch_size))
+    train_steps = int(np.ceil(train_epochs * train_examples / train_batch_size))  # pyrefly: ignore[unsupported-operation]
   train_epochs = train_steps * train_batch_size / train_examples
   return train_steps, train_epochs
 
@@ -610,11 +610,11 @@ def mixup(
     raise ValueError(f"Mixup 'concentration' must be greater than 0, but got "
                      f'concentration = {concentration}')
   # Generate alphas (weights) for the mixup.
-  concentration = jnp.full(shape, concentration)
+  concentration = jnp.full(shape, concentration)  # pyrefly: ignore[bad-assignment]
   concentration = partitioning.with_sharding_constraint(
-      concentration, partition_spec)
+      concentration, partition_spec)  # pyrefly: ignore[bad-argument-type]
   alpha = jax.random.dirichlet(rng, concentration)
-  alpha = partitioning.with_sharding_constraint(alpha, partition_spec)
+  alpha = partitioning.with_sharding_constraint(alpha, partition_spec)  # pyrefly: ignore[bad-argument-type]
   # Put the largest weight of each example in the first position of alpha.
   # This avoids destroying examples due to permuations of the weights.
   # If one samples an alpha for every example, then chances are that many of
@@ -667,7 +667,7 @@ def train_step(
     return total_loss, (next_rngs, metrics)
 
   compute_grads_and_metrics = accumulate_gradients_and_metrics(
-      compute_grads_and_metrics, microsteps)
+      compute_grads_and_metrics, microsteps)  # pyrefly: ignore[bad-argument-type]
   grads, (next_rngs, metrics) = compute_grads_and_metrics(
       state.params, images, labels, state.rngs)
   state, global_norms = state.apply_gradients_and_compute_global_norms(

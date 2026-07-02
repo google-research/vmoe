@@ -115,7 +115,7 @@ def run_pgd_attack(
     partitioning.log_logical_mesh(mesh)
     (flax_module, variables, variables_axis_resources, loss_fn, router_keys,
      rng_keys) = restore.restore_from_config(
-         config, config.restore.prefix, image_shape, mesh)
+         config, config.restore.prefix, image_shape, mesh)  # pyrefly: ignore[bad-argument-type]
   else:
     raise ValueError('config.restore.from = '
                      f'{config.restore.get("from")!r} is not supported.')

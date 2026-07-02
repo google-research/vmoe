@@ -122,7 +122,7 @@ class NoisyTopExpertsPerItemEnsembleRouter(
 
   # Wrap the super's _compute_gates_softmax_and_metrics with vmap over both
   # inputs and parameters.
-  @functools.partial(
+  @functools.partial(  # pyrefly: ignore[bad-specialization]
       nn.vmap,
       variable_axes={'params': 1},
       split_rngs={'params': True, 'gating': True},

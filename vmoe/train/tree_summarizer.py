@@ -92,11 +92,11 @@ class TreeSummarizer:
       self, key: str, value: Array, num_times_rules_matched: List[int],
   ) -> Iterator[Tuple[str, Array]]:
     """Generates one or multiple summary values for the given input array."""
-    for i, (pattern, *transforms) in enumerate(self.rules):
+    for i, (pattern, *transforms) in enumerate(self.rules):  # pyrefly: ignore[not-iterable]
       pattern = re.compile(pattern) if isinstance(pattern, str) else pattern
       if pattern.search(key):
         num_times_rules_matched[i] += 1
-        suffix, summary = self._transform(value, transforms)
+        suffix, summary = self._transform(value, transforms)  # pyrefly: ignore[bad-argument-type]
         if summary.size > self.max_summary_values:
           raise ValueError(
               f'Rule with pattern={pattern.pattern!r} and {transforms=} '

@@ -221,7 +221,7 @@ def _create_local_buffers(
   shard_shape = sharding.shard_shape(global_shape)
   output = {}
   for index in sharding.addressable_devices_indices_map(global_shape).values():
-    global_slice = _shard_index_to_slicend(index, global_shape)
+    global_slice = _shard_index_to_slicend(index, global_shape)  # pyrefly: ignore[bad-argument-type]
     if global_slice not in output:
       output[global_slice] = np.zeros(shard_shape, dtype=dtype)
   return output
@@ -251,7 +251,7 @@ def _create_map_filepath_to_data(
     }
     if version is not Version.UNKNOWN:
       index_content['version'] = version.value
-    filepath_to_data[prefix + '.index'] = index_content
+    filepath_to_data[prefix + '.index'] = index_content  # pyrefly: ignore[unsupported-operation]
 
   return filepath_to_data
 
@@ -326,7 +326,7 @@ def _create_map_slicend_to_checkpoint_shard(
     slicend_to_ckpt_shard[slicend] = ckpt_shard
     # Update the number of bytes written to the selected checkpoint shard.
     size = np.prod(tuple(s.stop - s.start for s in slicend)) * itemsize
-    bytes_per_ckpt_shard[ckpt_shard] += size
+    bytes_per_ckpt_shard[ckpt_shard] += size  # pyrefly: ignore[unsupported-operation]
   return slicend_to_ckpt_shard
 
 
@@ -338,7 +338,7 @@ def _find_ckpt_shards_to_restore(
 ) -> Iterator[int]:
   """Iterates over checkpoint shards to restore values of addressable array shards."""
   for index in sharding.addressable_devices_indices_map(global_shape).values():
-    global_slice = _shard_index_to_slicend(index, global_shape)
+    global_slice = _shard_index_to_slicend(index, global_shape)  # pyrefly: ignore[bad-argument-type]
     for ckpt_slice, ckpt_shard in safe_zip(ckpt_slices, ckpt_shards):
       if (global_slice == ckpt_slice or  # account for scalar with shape ().
           _intersect_slicend(global_slice, ckpt_slice)):
@@ -349,13 +349,13 @@ def _find_smallest_ckpt_shard(
     bytes_per_ckpt_shard: List[int], processes: Tuple[int, ...]) -> int:
   """Returns the smallest checkpoint shard, handled by one of the given processes."""
   # Sort checkpoint shards by their size, in increasing order.
-  bytes_per_ckpt_shard = [(b, i) for i, b in enumerate(bytes_per_ckpt_shard)]
+  bytes_per_ckpt_shard = [(b, i) for i, b in enumerate(bytes_per_ckpt_shard)]  # pyrefly: ignore[bad-assignment]
   bytes_per_ckpt_shard = sorted(bytes_per_ckpt_shard)
   # The i-th ckpt shard is handled by the process index = i % process_count.
   # From the previous sorted bytes_per_ckpt_shard, ignore all shards that aren't
   # handled by one of the given processes.
   return [
-      i for _, i in bytes_per_ckpt_shard
+      i for _, i in bytes_per_ckpt_shard  # pyrefly: ignore[not-iterable]
       if i % jax.process_count() in processes][0]
 
 
@@ -472,7 +472,7 @@ def _restore_checkpoint_from_index(
     shape, sharding = index[i].global_shape.shape, shardings[i]
     cb = lambda idx: local_buffers[i][_shard_index_to_slicend(idx, shape)]
     array = jax.make_array_from_callback(shape, sharding, cb)
-    local_buffers[i] = None
+    local_buffers[i] = None  # pyrefly: ignore[unsupported-operation]
     return array
   arrays = thread_pool.map(_make_jax_array, range(len(index)))
   return struct.unflatten(arrays)

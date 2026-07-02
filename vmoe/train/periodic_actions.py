@@ -49,7 +49,7 @@ class ReportProgress(periodic_actions.ReportProgress):
 
   def __call__(self, step: int, t: Optional[float] = None, **kwargs) -> bool:
     if super().__call__(step, t):
-      self._apply_extra(step, t, **kwargs)
+      self._apply_extra(step, t, **kwargs)  # pyrefly: ignore[bad-argument-type]
       return True
     return False
 

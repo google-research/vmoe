@@ -83,7 +83,7 @@ class MlpMoeBlock(nn.Module):
     # Create instance of the router class.
     router_cls = router_kwargs.pop('name', 'NoisyTopExpertsPerItemRouter')
     router_cls, router_args, router_kwargs2 = vmoe.utils.parse_call(
-        router_cls, default_module=routing)
+        router_cls, default_module=routing)  # pyrefly: ignore[bad-argument-type]
     return router_cls(*router_args, dtype=self.dtype, name='Router',
                       **(router_kwargs2 | router_kwargs))
 
@@ -111,7 +111,7 @@ class MlpMoeBlock(nn.Module):
         MlpBlock,
         has_aux=False,
         variable_axes={'params': 0, 'intermediates': 0},
-        split_rngs=self.create_split_rngs())(
+        split_rngs=self.create_split_rngs())(  # pyrefly: ignore[bad-argument-type]
             mlp_dim=self.mlp_dim,
             dropout_rate=self.dropout_rate,
             dtype=self.dtype,
@@ -251,7 +251,7 @@ class EncoderMoe(nn.Module):
 
     metrics = {}
     for block in range(self.num_layers):
-      if block in moe_mlp_layers:
+      if block in moe_mlp_layers:  # pyrefly: ignore[not-iterable]
         x, metrics[f'encoderblock_{block}'] = encoder_block_cls(
             name=f'encoderblock_{block}', mlp_block=moe_mlp_cls)(x)
       else:

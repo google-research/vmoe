@@ -98,7 +98,7 @@ def _replace_combine_weights(dispatcher, replacing_gates):
     # replacing_gates is (G, S, E).
     combine_weights = jnp.einsum(
         "GSEC,GSE->GSEC", dispatch_weights, replacing_gates)
-    dispatcher = dispatcher.replace(
+    dispatcher = dispatcher.replace(  # pyrefly: ignore[missing-attribute]
         combine_weights=combine_weights, dispatch_weights=dispatch_weights)
   else:
     # For the time being, only EinsumDispatcher is supported.

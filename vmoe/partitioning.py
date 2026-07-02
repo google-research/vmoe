@@ -200,7 +200,7 @@ def get_device_coords_tpu(device: Device) -> TpuCoords:
   assert hasattr(device, 'coords'), f'{device!r} lacks "coords"'
   core_on_chip = int(device.core_on_chip)
   coords = tuple(map(int, device.coords))
-  return (core_on_chip, *coords)
+  return (core_on_chip, *coords)  # pyrefly: ignore[bad-return]
 
 
 def get_hardware_mesh_local_shape(
@@ -394,16 +394,16 @@ def tree_axis_resources_from_regexes(
   Returns:
     A PyTree with the same structure as `tree`, with PartitionSpec leaves.
   """
-  axis_resources_regexes = tuple(
+  axis_resources_regexes = tuple(  # pyrefly: ignore[bad-assignment]
       (re.compile(regex), parse_partition_spec(spec))
       for regex, spec in axis_resources_regexes)
 
   def search_partition_spec(key: str, value: Any) -> PartitionSpec:
     if value is flax.traverse_util.empty_node:
-      return value
+      return value  # pyrefly: ignore[bad-return]
     for regex, partition_spec in axis_resources_regexes:
-      if regex.search(key) and np.prod(value.shape) > 1:
-        return partition_spec
+      if regex.search(key) and np.prod(value.shape) > 1:  # pyrefly: ignore[missing-attribute]
+        return partition_spec  # pyrefly: ignore[bad-return]
     return PartitionSpec()
 
   # NOTE: We use flax.serialization.to_state_dict to convert an arbitrary PyTree
