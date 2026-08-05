@@ -166,7 +166,7 @@ def freeze_weights(
     flatparams = flax.traverse_util.flatten_dict(
         flax.serialization.to_state_dict(params), sep='/')
     output = {
-        key: search_true if pattern.search(key) else search_false
+        key: search_true if pattern.search(key) else search_false  # pyrefly: ignore[missing-attribute]
         for key, value in flatparams.items()
     }
     return flax.serialization.from_state_dict(
