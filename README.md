@@ -47,7 +47,7 @@ on ImageNet (either ILSVRC2012 or ImageNet-21k). All checkpoints contain an
 index file (with `.index` extension) and one or multiple data files (
 with extension `.data-nnnnn-of-NNNNN`, called *shards*). In the following
 list, we indicate *only the prefix* of each checkpoint.
-We recommend using [gsutil](https://cloud.google.com/storage/docs/gsutil) to
+We recommend using [gcloud storage](https://docs.cloud.google.com/sdk/docs/install-sdk) to
 obtain the full list of files, download them, etc.
 
 - V-MoE S/32, 8 experts on the last two odd blocks, trained from scratch on
