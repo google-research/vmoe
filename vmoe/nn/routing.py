@@ -99,7 +99,7 @@ class NoisyTopExpertsPerItemRouter(nn.Module):
           functools.partial(
               self._load_auxiliary_loss,
               num_selected_experts=self.num_selected_experts,
-              noise_std=noise_std))(gates_logits, gates_logits_noisy)
+              noise_std=noise_std))(gates_logits, gates_logits_noisy)  # pyrefly: ignore[bad-argument-type]
       gshard_loss = jax.vmap(self._gshard_auxiliary_loss)(gates_softmax_noisy)
 
       metrics = {

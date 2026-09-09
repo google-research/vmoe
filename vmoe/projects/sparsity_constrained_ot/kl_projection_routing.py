@@ -115,7 +115,7 @@ class KLProjectionNoisyTopExpertsPerItemRouter(
             functools.partial(
                 self._load_auxiliary_loss,
                 num_selected_experts=self.num_selected_experts,
-                noise_std=noise_std))(gates_logits, gates_logits_noisy)
+                noise_std=noise_std))(gates_logits, gates_logits_noisy)  # pyrefly: ignore[bad-argument-type]
       metrics = {
           "auxiliary_loss": ot_routing._weighted_sum(  ## pylint: disable=protected-access
               (self.importance_loss_weight, importance_loss),

@@ -182,7 +182,7 @@ class VitMoeTest(parameterized.TestCase):
     }
     if not position_emb_kwargs:
       expected_shapes['params']['Encoder']['posembed_input'] = {  # pyrefly: ignore[bad-assignment]
-          'pos_embedding': (1, 4, 8),
+          'pos_embedding': (1, 4, 8),  # pyrefly: ignore[bad-assignment]
       }
     self.assertDictEqual(shapes, expected_shapes)
 
