@@ -163,5 +163,62 @@ class NoisyTopItemsPerExpertRouterTest(parameterized.TestCase):
     chex.assert_trees_all_equal_comparator(different_fn, error_msg_fn, y1, y2)
 
 
+class BalancedAuxiliaryLossTest(parameterized.TestCase):
+
+  @parameterized.product(
+      num_experts=[1, 2, 4], uniform=[False, True], compiled=[False, True])
+  def test_balanced_importance_has_zero_gradient(
+      self, num_experts, uniform, compiled):
+    gates = (jnp.full((num_experts, num_experts), 1. / num_experts)
+             if uniform else jnp.eye(num_experts))
+    evaluate = jax.value_and_grad(
+        routing.NoisyTopExpertsPerItemRouter._importance_auxiliary_loss)
+    if compiled:
+      evaluate = jax.jit(evaluate)
+    value, gradient = evaluate(gates)
+    self.assertAlmostEqual(float(value), 0., places=6)
+    chex.assert_tree_all_finite(gradient)
+    chex.assert_trees_all_close(gradient, jnp.zeros_like(gates))
+
+  @parameterized.product(num_experts=[1, 2, 4], compiled=[False, True])
+  def test_balanced_load_has_zero_gradient(self, num_experts, compiled):
+    def loss(logits, noisy_logits):
+      return routing.NoisyTopExpertsPerItemRouter._load_auxiliary_loss(
+          logits, noisy_logits, noise_std=.2, num_selected_experts=1)
+
+    evaluate = jax.value_and_grad(loss, argnums=(0, 1))
+    if compiled:
+      evaluate = jax.jit(evaluate)
+    logits = jnp.zeros((3, num_experts))
+    value, gradients = evaluate(logits, logits)
+    self.assertAlmostEqual(float(value), 0., places=6)
+    chex.assert_tree_all_finite(gradients)
+    chex.assert_trees_all_close(
+        gradients, (jnp.zeros_like(logits), jnp.zeros_like(logits)), atol=1e-7)
+
+  @parameterized.product(deterministic=[False, True], compiled=[False, True])
+  def test_zero_initialized_router_has_finite_gradient(
+      self, deterministic, compiled):
+    layer = routing.NoisyTopExpertsPerItemRouter(
+        num_experts=4, num_selected_experts=2, deterministic=deterministic)
+    inputs = jnp.ones((2, 3, 4))
+    kernel = jnp.zeros((4, 4))
+
+    def loss(kernel):
+      _, metrics = layer.apply(
+          {'params': {'dense': {'kernel': kernel}}}, inputs,
+          rngs={'gating': jax.random.PRNGKey(7)})
+      return metrics['auxiliary_loss'].sum()
+
+    with mock.patch.object(
+        routing.vmoe.moe, 'get_top_experts_per_item_dispatcher',
+        side_effect=lambda x, **_: x):
+      evaluate = jax.value_and_grad(loss)
+      if compiled:
+        evaluate = jax.jit(evaluate)
+      value, gradient = evaluate(kernel)
+    chex.assert_tree_all_finite((value, gradient))
+
+
 if __name__ == '__main__':
   absltest.main()
