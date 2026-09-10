@@ -151,10 +151,10 @@ class NoisyTopExpertsPerItemRouter(nn.Module):
   def _importance_auxiliary_loss(cls, gates: Array) -> Array:
     axis = tuple(range(gates.ndim - 1))  # All except last.
     importance_per_expert = jnp.sum(gates, axis=axis)
-    std_importance_per_expert = jnp.std(importance_per_expert)
+    variance_importance_per_expert = jnp.var(importance_per_expert)
     mean_importance_per_expert = jnp.mean(importance_per_expert)
-    # Compute coefficient of variation (i.e. std/mean) squared.
-    return (std_importance_per_expert / mean_importance_per_expert)**2
+    # Use variance directly to avoid the undefined gradient of std at zero.
+    return variance_importance_per_expert / mean_importance_per_expert**2
 
   @classmethod
   def _load_auxiliary_loss(cls, logits: Array, logits_noisy: Array,
@@ -180,7 +180,7 @@ class NoisyTopExpertsPerItemRouter(nn.Module):
     # We compute the average such probability for each expert over examples.
     p_mean = jnp.mean(p, axis=0)
     # Compute p_mean's coefficient of variation squared.
-    return (jnp.std(p_mean) / jnp.mean(p_mean))**2
+    return jnp.var(p_mean) / jnp.mean(p_mean)**2
 
 
 class NoisyTopItemsPerExpertRouter(nn.Module):
