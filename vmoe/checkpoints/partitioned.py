@@ -176,12 +176,12 @@ def save_checkpoint(
           prefix, num_shards, jax.process_count(), jax.process_count())
     num_shards = jax.process_count()
 
-  bytes_per_shard = [0] * num_shards
+  bytes_per_shard = [0] * num_shards  # pyrefly: ignore[unsupported-operation]
   index_leaves = []
   # Dictionary with the checkpoint shards handled by the current process.
   ckpt_shard_to_lazy_array_chunks = {
       i: LazyArrayChunks()
-      for i in range(num_shards)
+      for i in range(num_shards)  # pyrefly: ignore[bad-argument-type]
       if i % jax.process_count() == jax.process_index()
   }
   for i, arr in enumerate(leaves):
@@ -200,7 +200,7 @@ def save_checkpoint(
   _replace_jax_with_numpy_in_lazy_array_chunks(ckpt_shard_to_lazy_array_chunks)
   filepath_to_data = _create_map_filepath_to_data(
       prefix, struct, index_leaves, ckpt_shard_to_lazy_array_chunks,
-      num_shards, version)
+      num_shards, version)  # pyrefly: ignore[bad-argument-type]
   del ckpt_shard_to_lazy_array_chunks
 
   if makedirs:

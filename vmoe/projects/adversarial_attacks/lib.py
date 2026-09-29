@@ -80,7 +80,7 @@ def get_dataset(config: ml_collections.ConfigDict) -> DatasetIterator:
   config = config.to_dict()
   _ = config.pop('prefetch_device', None)
   # Note: the variant name is not important as long it isn't "train".
-  return input_pipeline.get_dataset(variant='adversarial', **config)
+  return input_pipeline.get_dataset(variant='adversarial', **config)  # pyrefly: ignore[bad-unpacking, missing-argument]
 
 
 def savez_compressed(filepath: str, **data):
