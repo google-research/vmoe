@@ -75,11 +75,10 @@ def add_decayed_weights(
         flax.serialization.to_state_dict(updates), sep='/')
     flatparams = flax.traverse_util.flatten_dict(
         flax.serialization.to_state_dict(params), sep='/')
-    flatupdates = dict(utils.safe_map(
-        lambda k, g, p: (k, g + weight_decay_fn(k) * p),
-        flatupdates.keys(),
-        flatupdates.values(),
-        flatparams.values()))
+    flatupdates = {
+        k: g + weight_decay_fn(k) * flatparams[k]
+        for k, g in flatupdates.items()
+    }
     updates = flax.serialization.from_state_dict(
         updates, flax.traverse_util.unflatten_dict(flatupdates, sep='/'))
     return updates, state
