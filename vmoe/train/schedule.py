@@ -16,6 +16,7 @@
 import math
 
 import jax
+import jax.numpy as jnp
 import optax
 
 
@@ -102,7 +103,8 @@ def big_vision_rsqrt_schedule(
   def _cooldown(count):
     # Note: count starts from 0, optax.join_schedules subtracts
     # decay_steps - cooldown_steps.
-    return cooldown_peak_value * (1 - count / cooldown_steps)
+    return jnp.where(count < cooldown_steps,
+                     cooldown_peak_value * (1 - count / cooldown_steps), 0.0)
 
   schedules, boundaries = [], []
   # Warmup phase.
