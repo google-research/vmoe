@@ -19,6 +19,8 @@ from absl.testing import parameterized
 import chex
 import jax
 import jax.numpy as jnp
+import numpy as np
+import optax
 from vmoe.nn import routing
 
 
@@ -161,6 +163,85 @@ class NoisyTopItemsPerExpertRouterTest(parameterized.TestCase):
     different_fn = lambda x, y: jnp.abs(x - y).sum() > 0.01
     error_msg_fn = lambda x, y: f'{x} is too close to {y}'
     chex.assert_trees_all_equal_comparator(different_fn, error_msg_fn, y1, y2)
+
+
+class BalancedAuxiliaryGradientTest(parameterized.TestCase):
+  """Balanced expert statistics have a smooth zero-variance loss."""
+
+  @parameterized.parameters(1, 2, 4)
+  def test_importance_value_gradient_and_hessian_at_balance(self, experts):
+    gates = jnp.full((4, experts), 1.0 / experts)
+    loss = routing.NoisyTopExpertsPerItemRouter._importance_auxiliary_loss
+    for function in (jax.value_and_grad(loss), jax.jit(jax.value_and_grad(loss))):
+      value, gradient = function(gates)
+      self.assertEqual(float(value), 0.0)
+      np.testing.assert_array_equal(gradient, np.zeros_like(gates))
+    direction = jnp.arange(gates.size, dtype=gates.dtype).reshape(gates.shape)
+    _, tangent = jax.jvp(jax.grad(loss), (gates,), (direction,))
+    self.assertTrue(np.all(np.isfinite(tangent)))
+
+  @parameterized.product(experts=(1, 3), selected=(1,))
+  def test_balanced_load_has_finite_zero_gradients(self, experts, selected):
+    logits = jnp.zeros((4, experts))
+
+    def loss(values):
+      return routing.NoisyTopExpertsPerItemRouter._load_auxiliary_loss(
+          values, logits, noise_std=0.3, num_selected_experts=selected
+      )
+
+    value, gradient = jax.jit(jax.value_and_grad(loss))(logits)
+    self.assertEqual(float(value), 0.0)
+    np.testing.assert_array_equal(gradient, np.zeros_like(logits))
+
+  def test_nonuniform_balanced_gates_and_unbalanced_reference(self):
+    loss = routing.NoisyTopExpertsPerItemRouter._importance_auxiliary_loss
+    balanced = jnp.array([[0.9, 0.1], [0.1, 0.9]])
+    np.testing.assert_array_equal(jax.grad(loss)(balanced), np.zeros((2, 2)))
+    gates = jnp.array(
+        [[0.5, 0.4, 0.1], [0.3, 0.3, 0.4], [0.1, 0.2, 0.7], [0.8, 0.2, 0.0]]
+    )
+    totals = np.asarray(gates).sum(0)
+    expected = np.mean((totals - totals.mean()) ** 2) / totals.mean() ** 2
+    np.testing.assert_allclose(loss(gates), expected, rtol=1e-5)
+    analytical = jax.grad(loss)(gates)
+    eps = 1e-3
+    for i in range(gates.shape[0]):
+      for j in range(gates.shape[1]):
+        plus = gates.at[i, j].add(eps)
+        minus = gates.at[i, j].add(-eps)
+        finite_difference = (loss(plus) - loss(minus)) / (2 * eps)
+        np.testing.assert_allclose(
+            analytical[i, j], finite_difference, rtol=1e-3, atol=1e-5
+        )
+
+  @parameterized.parameters(True, False)
+  def test_real_router_balanced_initialization_allows_training_update(
+      self, deterministic
+  ):
+    layer = routing.NoisyTopExpertsPerItemRouter(
+        num_experts=3,
+        num_selected_experts=2,
+        deterministic=deterministic,
+        dispatcher={'name': 'einsum', 'batch_priority': False, 'capacity': 4},
+    )
+    inputs = jnp.ones((3, 4, 2))
+    params = {'dense': {'kernel': jnp.zeros((2, 3))}}
+    key = jax.random.PRNGKey(13)
+
+    def objective(p):
+      dispatcher, metrics = layer.apply({'params': p}, inputs, rngs={'gating': key})
+      dispatched = dispatcher.dispatch(inputs)
+      combined = dispatcher.combine(dispatched * 2.0)
+      return jnp.mean(combined**2) + metrics['auxiliary_loss'].mean()
+
+    value, grads = jax.jit(jax.value_and_grad(objective))(params)
+    self.assertTrue(np.isfinite(value))
+    for gradient in jax.tree.leaves(grads):
+      self.assertTrue(np.all(np.isfinite(gradient)))
+    optimizer = optax.sgd(1e-3)
+    updates, _ = optimizer.update(grads, optimizer.init(params), params)
+    updated = optax.apply_updates(params, updates)
+    self.assertTrue(np.isfinite(objective(updated)))
 
 
 if __name__ == '__main__':
