@@ -334,7 +334,7 @@ def _make_fewshot_step_pjit(
     rng_keys: Sequence[str],
 ):
   """Wraps _fewshot_step with pjit."""
-  state_axis_resources = FewShotState(  # pytype: disable=wrong-arg-types
+  state_axis_resources = FewShotState(
       rngs={key: PartitionSpec() for key in rng_keys})  # pyrefly: ignore[bad-argument-type]
   fewshot_step_pjit = jax.experimental.pjit.pjit(
       functools.partial(_fewshot_step, apply_fn=apply_fn),

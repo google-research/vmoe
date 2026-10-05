@@ -62,7 +62,7 @@ class SparseProjectionTransportTopItemsPerExpertRouter(
       dispatcher, metrics = self._create_dispatcher_and_metrics(
           gates_dispatch=gates_ot)
     metrics["auxiliary_loss"] = 0.0
-    return dispatcher, metrics  # pytype: disable=bad-return-type
+    return dispatcher, metrics
 
   @nn.nowrap
   def _compute_gates(

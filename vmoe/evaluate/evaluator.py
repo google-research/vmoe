@@ -138,7 +138,7 @@ class EvaluateMultipleDatasets(periodic_actions.PeriodicCallback):
     # Note: We create the eval_step_pjit here to avoid multiple compilation
     # steps. If the shapes of inputs/outputs for all datasets is the same, this
     # will be only compiled once.
-    eval_state_dtype_struct = EvalState(  # pytype: disable=wrong-arg-types  # dataclass_transform
+    eval_state_dtype_struct = EvalState(
         num=jax.ShapeDtypeStruct(shape=(), dtype=jnp.float32),  # pyrefly: ignore[bad-argument-type]
         sum_correct=jax.ShapeDtypeStruct(shape=(), dtype=jnp.float32),  # pyrefly: ignore[bad-argument-type]
         sum_loss=jax.ShapeDtypeStruct(shape=(), dtype=jnp.float32),  # pyrefly: ignore[bad-argument-type]
@@ -160,7 +160,7 @@ class EvaluateMultipleDatasets(periodic_actions.PeriodicCallback):
         in_shardings=(), out_shardings=None, static_argnums=(0,))
     def make_eval_state_pjit(seed):
       rngs = utils.make_rngs(rng_keys, seed)
-      return EvalState(  # pytype: disable=wrong-arg-types  # jnp-type
+      return EvalState(
           num=jnp.zeros((), dtype=jnp.float32),  # pyrefly: ignore[bad-argument-type]
           sum_correct=jnp.zeros((), dtype=jnp.float32),  # pyrefly: ignore[bad-argument-type]
           sum_loss=jnp.zeros((), dtype=jnp.float32),  # pyrefly: ignore[bad-argument-type]
@@ -172,7 +172,7 @@ class EvaluateMultipleDatasets(periodic_actions.PeriodicCallback):
       # Note: This is not the initial EvalState, this only serves to compile the
       # eval step for a given dataset.
       t0 = time.time()
-      eval_step_pjit_ds = eval_step_pjit.lower(  # pytype: disable=attribute-error  # always-use-return-annotations
+      eval_step_pjit_ds = eval_step_pjit.lower(  # pyrefly: ignore[missing-attribute]
           eval_state_dtype_struct,
           params,
           datasets_element_shape_dtype[name]['image'],

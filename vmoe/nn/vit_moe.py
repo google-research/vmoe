@@ -41,7 +41,7 @@ class MlpBlock(models_vit.MlpBlock):
   deterministic: bool = False
 
   @nn.compact
-  def __call__(self, inputs):  # pytype: disable=signature-mismatch  # overriding-parameter-name-checks
+  def __call__(self, inputs):
     return super().__call__(inputs, deterministic=self.deterministic)
 
 

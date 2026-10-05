@@ -102,7 +102,7 @@ def run_pgd_attack(
   del mesh
   # Setup dataset and get the global shape of the image array.
   dataset = get_dataset(config.dataset)
-  element_spec: ArraySpecDict = dataset.element_spec  # pytype: disable=annotation-type-mismatch
+  element_spec: ArraySpecDict = dataset.element_spec  # pyrefly: ignore[bad-assignment]
   image_shape = tuple(element_spec['image'].shape)
   image_shape = (config.dataset.batch_size,) + image_shape[1:]
   num_examples = input_pipeline.get_data_num_examples(config.dataset)

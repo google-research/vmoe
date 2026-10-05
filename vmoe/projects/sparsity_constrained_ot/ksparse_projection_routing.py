@@ -86,7 +86,7 @@ class KSparseProjectionTransportTopExpertsPerItemRouter(
     metrics["num_experts_per_item_min"] = jnp.min(num_experts_per_item, axis=1)  # pyrefly: ignore[bad-assignment]
     metrics["num_experts_per_item_max"] = jnp.max(num_experts_per_item, axis=1)  # pyrefly: ignore[bad-assignment]
     metrics["num_experts_per_item_avg"] = jnp.mean(num_experts_per_item, axis=1)  # pyrefly: ignore[bad-assignment]
-    return gates_ot, gates_softmax, metrics  # pytype: disable=bad-return-type  # jax-ndarray
+    return gates_ot, gates_softmax, metrics  # pyrefly: ignore[bad-return]
 
   @nn.nowrap
   def _get_k_sparse_ot_func(self, group_size):
@@ -133,7 +133,7 @@ class KSparseProjectionTransportTopItemsPerExpertRouter(
     metrics["num_items_per_expert_max"] = jnp.max(num_items_per_expert, axis=1)
     metrics["num_items_per_expert_avg"] = jnp.mean(num_items_per_expert, axis=1)
     metrics["auxiliary_loss"] = 0.
-    return dispatcher, metrics  # pytype: disable=bad-return-type
+    return dispatcher, metrics
 
   @nn.nowrap
   def _compute_gates(

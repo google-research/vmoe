@@ -53,7 +53,7 @@ class AsyncCheckpointerWithStructure(orbax_checkpoint.AsyncCheckpointer):
     """See superclass documentation."""
     directory = epath.Path(directory)
     try:
-      return self._handler.structure(directory)  # pytype: disable=attribute-error
+      return self._handler.structure(directory)  # pyrefly: ignore[missing-attribute]
     except NotImplementedError:
       return
 

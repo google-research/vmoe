@@ -99,7 +99,7 @@ class KLProjectionNoisyTopExpertsPerItemRouter(
               (self.importance_loss_weight, importance_loss)),
           "importance_loss": importance_loss,
       }
-      return gates_plan, gates_softmax, metrics  # pytype: disable=bad-return-type  # jax-ndarray
+      return gates_plan, gates_softmax, metrics  # pyrefly: ignore[bad-return]
     else:
       noise_std = (1.0 / num_experts) * self.noise_std
       logits_noise = noise_std * jax.random.normal(
@@ -111,7 +111,7 @@ class KLProjectionNoisyTopExpertsPerItemRouter(
         # no need to compute the loss in this case
         load_loss = 0.0
       else:
-        load_loss = jax.vmap(  # pytype: disable=wrong-arg-types
+        load_loss = jax.vmap(
             functools.partial(
                 self._load_auxiliary_loss,
                 num_selected_experts=self.num_selected_experts,
@@ -123,7 +123,7 @@ class KLProjectionNoisyTopExpertsPerItemRouter(
           "importance_loss": importance_loss,
           "load_loss": load_loss,
       }
-      return gates_plan_noisy, gates_softmax_noisy, metrics  # pytype: disable=bad-return-type  # jax-ndarray
+      return gates_plan_noisy, gates_softmax_noisy, metrics  # pyrefly: ignore[bad-return]
 
   @nn.nowrap
   def _get_kl_projection_algorithm(self, group_size):
@@ -197,7 +197,7 @@ class KLProjectionNoisyTopItemsPerExpertRouter(
       dispatcher, metrics = self._create_dispatcher_and_metrics(
           gates_dispatch=gates_ot)
     metrics["auxiliary_loss"] = 0.
-    return dispatcher, metrics  # pytype: disable=bad-return-type
+    return dispatcher, metrics
 
   @nn.nowrap
   def _compute_gates(self, inputs: Array, num_experts: int) -> Array:
@@ -212,7 +212,7 @@ class KLProjectionNoisyTopItemsPerExpertRouter(
     if self.deterministic or self.noise_std == 0.0:
       gates_ot = ot_algorithm(sim_matrix=gates_logits)
       gates_softmax = jax.nn.softmax(gates_logits)
-      return gates_ot, gates_softmax  # pytype: disable=bad-return-type  # jax-ndarray
+      return gates_ot, gates_softmax  # pyrefly: ignore[bad-return]
     else:
       noise_std = (1.0 / num_experts) * self.noise_std
       logits_noise = noise_std * jax.random.normal(
@@ -220,7 +220,7 @@ class KLProjectionNoisyTopItemsPerExpertRouter(
       gates_logits_noisy = gates_logits + logits_noise
       gates_ot_noisy = ot_algorithm(sim_matrix=gates_logits_noisy)
       gates_softmax_noisy = jax.nn.softmax(gates_logits_noisy)
-      return gates_ot_noisy, gates_softmax_noisy  # pytype: disable=bad-return-type  # jax-ndarray
+      return gates_ot_noisy, gates_softmax_noisy  # pyrefly: ignore[bad-return]
 
   @nn.nowrap
   def _get_kl_projection_algorithm(self, group_size):
