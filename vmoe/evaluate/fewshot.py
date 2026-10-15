@@ -302,7 +302,11 @@ def _find_best_l2_reg(all_results, shots, l2_regs):
     reg_ranks = []
     for res in all_results.values():
       reg_accus = [res[shot, l2] for l2 in l2_regs]
-      reg_ranks.append(np.argsort(np.argsort(reg_accus)))
+      # Equal accuracies contribute equal ranks, regardless of grid order.
+      _, inverse, counts = np.unique(
+          reg_accus, return_inverse=True, return_counts=True)
+      average_ranks = np.cumsum(counts) - 1 - (counts - 1) / 2
+      reg_ranks.append(average_ranks[inverse])
     best_l2[shot] = l2_regs[np.argmax(np.mean(reg_ranks, axis=0))]
   return best_l2
 
