@@ -119,9 +119,10 @@ class GetDatasetTest(absltest.TestCase):
     # Eval data has a '__valid__' field, since fake examples were added.
     self.assertSetEqual(set(data[0].keys()),
                         {'x', 'y', input_pipeline.VALID_KEY})
-    # Eval data is not shuffled, and the fake data corresponds to the first
-    # element.
-    self.assertTupleEqual(tuple(data[0]['x']), (0, 1, 2, 0, 0))
+    # Eval data has valid elements (order may vary due to non-deterministic
+    # parallel mapping) and fake elements at the end.
+    self.assertSequenceEqual(sorted(data[0]['x'][:3]), (0, 1, 2))
+    self.assertTupleEqual(tuple(data[0]['x'][3:]), (0, 0))
     self.assertTupleEqual(tuple(data[0][input_pipeline.VALID_KEY]),
                           (True, True, True, False, False))
 
